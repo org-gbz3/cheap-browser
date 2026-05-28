@@ -59,15 +59,49 @@ class URL:
         return content
 
 
+HTML_ENTITIES = {
+    "amp": "&",
+    "lt": "<",
+    "gt": ">",
+    "quot": '"',
+    "apos": "'",
+    "nbsp": " ",
+    "ndash": "–",
+    "mdash": "—",
+    "copy": "©",
+    "reg": "®",
+    "trade": "™",
+    "asymp": "≈",
+    "ne": "≠",
+    "pound": "£",
+    "euro": "€",
+    "deg": "°",
+}
+
+
 def show(body: str):
     in_tag = False
+    in_ett = False
+    ett_name = ""
     for c in body:
         if c == "<":
             in_tag = True
         elif c == ">":
             in_tag = False
         elif not in_tag:
-            print(c, end="")
+            if c == "&":
+                in_ett = True
+                ett_name = ""
+            elif c == ";":
+                in_ett = False
+                if ett_name in HTML_ENTITIES:
+                    print(f"{HTML_ENTITIES[ett_name]}")
+                else:
+                    print(f"[entity is {ett_name}]")
+            elif in_ett:
+                ett_name += c
+            else:
+                print(c, end="")
 
 
 def load(url: URL):
