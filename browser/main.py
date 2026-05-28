@@ -30,6 +30,7 @@ class URL:
 
         if self.scheme == "https":
             ctx = ssl.create_default_context()
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
             s = ctx.wrap_socket(s, server_hostname=self.host)
 
         request = f"GET {self.path} HTTP/1.0\r\n"
