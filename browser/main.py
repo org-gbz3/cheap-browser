@@ -139,6 +139,7 @@ class Browser:
         self.canvas.pack()
         self.scroll = 0
         self.window.bind("<Down>", self.scrolldown)
+        self.window.bind("<Up>", self.scrollup)
 
     def draw(self):
         self.canvas.delete("all")
@@ -157,6 +158,10 @@ class Browser:
 
     def scrolldown(self, e: tkinter.Event):
         self.scroll += SCROLL_STEP
+        self.draw()
+
+    def scrollup(self, e: tkinter.Event):
+        self.scroll -= min(SCROLL_STEP, self.scroll)
         self.draw()
 
 
