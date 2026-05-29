@@ -1,5 +1,6 @@
 import socket
 import ssl
+import tkinter
 
 
 class URL:
@@ -61,26 +62,27 @@ class URL:
 
 
 HTML_ENTITIES = {
-    "amp": "&",
-    "lt": "<",
-    "gt": ">",
-    "quot": '"',
-    "apos": "'",
-    "nbsp": " ",
-    "ndash": "–",
-    "mdash": "—",
-    "copy": "©",
-    "reg": "®",
-    "trade": "™",
-    "asymp": "≈",
-    "ne": "≠",
-    "pound": "£",
-    "euro": "€",
-    "deg": "°",
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": '"',
+    "&apos;": "'",
+    "&nbsp;": " ",
+    "&ndash;": "–",
+    "&mdash;": "—",
+    "&copy;": "©",
+    "&reg;": "®",
+    "&trade;": "™",
+    "&asymp;": "≈",
+    "&ne;": "≠",
+    "&pound;": "£",
+    "&euro;": "€",
+    "&deg;": "°",
 }
 
 
-def show(body: str):
+def lex(body: str) -> str:
+    text = ""
     in_tag = False
     in_ett = False
     ett_name = ""
@@ -92,25 +94,49 @@ def show(body: str):
         elif not in_tag:
             if c == "&":
                 in_ett = True
-                ett_name = ""
+                ett_name = c
             elif c == ";":
+                ett_name += c
                 in_ett = False
                 if ett_name in HTML_ENTITIES:
-                    print(f"{HTML_ENTITIES[ett_name]}")
+                    text += HTML_ENTITIES[ett_name]
                 else:
-                    print(f"[entity is {ett_name}]")
+                    text += ett_name
             elif in_ett:
                 ett_name += c
             else:
-                print(c, end="")
+                text += c
+    return text
 
 
-def load(url: URL):
-    body = url.request()
-    show(body)
+WIDTH, HEIGHT = 800, 600
+HSTEP, VSTEP = 13, 18
+
+
+class Browser:
+    def __init__(self) -> None:
+        self.window = tkinter.Tk()
+        self.canvas = tkinter.Canvas(
+            self.window,
+            width=WIDTH,
+            height=HEIGHT,
+        )
+        self.canvas.pack()
+
+    def load(self, url: URL):
+        body = url.request()
+        text = lex(body)
+        cursor_x, cursor_y = HSTEP, VSTEP
+        for c in text:
+            self.canvas.create_text(cursor_x, cursor_y, text=c)
+            cursor_x += HSTEP
+            if cursor_x >= WIDTH - HSTEP:
+                cursor_y += VSTEP
+                cursor_x = HSTEP
 
 
 if __name__ == "__main__":
     import sys
 
-    load(URL(sys.argv[1]))
+    Browser().load(URL(sys.argv[1]))
+    tkinter.mainloop()
