@@ -1,6 +1,22 @@
+import logging
 import socket
 import ssl
 import tkinter
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
+# JST タイムゾーンの設定
+def jst_converter(*args: float | None):
+    return datetime.now(ZoneInfo("Asia/Tokyo")).timetuple()
+
+
+# コンバーターを JST に差し替える
+logging.Formatter.converter = jst_converter
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
 
 class URL:
@@ -139,7 +155,9 @@ class Browser:
         self.canvas.pack()
         self.scroll = 0
         self.window.bind("<Down>", self.scrolldown)
+        self.window.bind("<Button-5>", self.scrolldown)
         self.window.bind("<Up>", self.scrollup)
+        self.window.bind("<Button-4>", self.scrollup)
 
     def draw(self):
         self.canvas.delete("all")
@@ -158,10 +176,12 @@ class Browser:
 
     def scrolldown(self, e: tkinter.Event):
         self.scroll += SCROLL_STEP
+        logging.info(f"scroll={self.scroll}")
         self.draw()
 
     def scrollup(self, e: tkinter.Event):
         self.scroll -= min(SCROLL_STEP, self.scroll)
+        logging.info(f"scroll={self.scroll}")
         self.draw()
 
 
