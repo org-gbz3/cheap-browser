@@ -140,6 +140,8 @@ def lex(body: str) -> list[Text | Tag]:
                 ett_name += c
             else:
                 buffer += c
+        else:
+            buffer += c
     return out
 
 
@@ -150,6 +152,7 @@ HSTEP, VSTEP = 13, 18
 class Layout:
     def __init__(self, tokens: list[Text | Tag], width: int) -> None:
         self.width = width
+        self.line: list[tuple[int, str, tkinter.font.Font]] = []
         self.display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
         self.cursor_x = HSTEP
         self.cursor_y = VSTEP
@@ -159,6 +162,7 @@ class Layout:
 
         for tok in tokens:
             self.token(tok)
+        self.flush()
 
     def token(self, tok: Text | Tag):
         if isinstance(tok, Text):
@@ -180,6 +184,11 @@ class Layout:
             self.size += 4
         elif tok.tag == "/big":
             self.size -= 4
+        elif tok.tag == "br":
+            self.flush()
+        elif tok.tag == "/p":
+            self.flush()
+            self.cursor_y += VSTEP
 
     def word(self, word: str):
         font = tkinter.font.Font(
@@ -188,11 +197,31 @@ class Layout:
             slant=self.style,
         )
         w = font.measure(word)
-        self.display_list.append((self.cursor_x, self.cursor_y, word, font))
-        self.cursor_x += w + font.measure(" ")
+
         if self.cursor_x + w >= self.width - HSTEP:
-            self.cursor_y += int(font.metrics("linespace") * 1.25)
-            self.cursor_x = HSTEP
+            self.flush()
+
+        self.line.append((self.cursor_x, word, font))
+        self.cursor_x += w + font.measure(" ")
+
+    def flush(self):
+        if not self.line:
+            return
+
+        # 各単語をベースラインに配置し、ディスプレイリストに追加
+        max_ascent = max([font.metrics("ascent") for _, _, font in self.line])
+        baseline = self.cursor_y + 1.25 * max_ascent
+        for x, word, font in self.line:
+            y = int(baseline - font.metrics("ascent"))
+            self.display_list.append((x, y, word, font))
+
+        # 次の行のy座標を更新
+        metrics = [font.metrics() for _, _, font in self.line]
+        max_descent = max([metric["descent"] for metric in metrics])
+        self.cursor_y = baseline + 1.25 * max_descent
+
+        self.cursor_x = HSTEP
+        self.line = []
 
 
 SCROLL_STEP = 100
