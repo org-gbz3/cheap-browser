@@ -2,7 +2,9 @@ import logging
 import socket
 import ssl
 import tkinter
+import tkinter.font
 from datetime import datetime
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 
@@ -77,6 +79,16 @@ class URL:
         return content
 
 
+class Text:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class Tag:
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+
+
 HTML_ENTITIES = {
     "&amp;": "&",
     "&lt;": "<",
@@ -94,19 +106,26 @@ HTML_ENTITIES = {
     "&pound;": "£",
     "&euro;": "€",
     "&deg;": "°",
+    "&#39;": '"',
 }
 
 
-def lex(body: str) -> str:
-    text = ""
+def lex(body: str) -> list[Text | Tag]:
+    out: list[Text | Tag] = []
+    buffer = ""
     in_tag = False
     in_ett = False
     ett_name = ""
     for c in body:
         if c == "<":
             in_tag = True
+            if buffer:
+                out.append(Text(buffer))
+                buffer = ""
         elif c == ">":
             in_tag = False
+            out.append(Tag(buffer))
+            buffer = ""
         elif not in_tag:
             if c == "&":
                 in_ett = True
@@ -115,30 +134,130 @@ def lex(body: str) -> str:
                 ett_name += c
                 in_ett = False
                 if ett_name in HTML_ENTITIES:
-                    text += HTML_ENTITIES[ett_name]
+                    buffer += HTML_ENTITIES[ett_name]
                 else:
-                    text += ett_name
+                    buffer += ett_name
             elif in_ett:
                 ett_name += c
             else:
-                text += c
-    return text
+                buffer += c
+        else:
+            buffer += c
+    return out
+
+
+FONTS: dict[
+    tuple[int, Literal["normal", "bold"], str], tuple[tkinter.font.Font, tkinter.Label]
+] = {}
+
+
+def get_font(
+    size: int, weight: Literal["normal", "bold"], style: Literal["roman", "italic"]
+) -> tkinter.font.Font:
+    key = (size, weight, style)
+    if key not in FONTS:
+        font = tkinter.font.Font(
+            size=size,
+            weight=weight,
+            slant=style,
+        )
+        # パフォーマンス向上のためのLabelオブジェクト（Tkinter推奨）
+        label = tkinter.Label(font=font)
+        FONTS[key] = (font, label)
+    return FONTS[key][0]
 
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 
 
-def layout(text: str, width: int) -> list[tuple[int, int, str]]:
-    display_list: list[tuple[int, int, str]] = []
-    cursor_x, cursor_y = HSTEP, VSTEP
-    for c in text:
-        display_list.append((cursor_x, cursor_y, c))
-        cursor_x += HSTEP
-        if cursor_x >= width - HSTEP:
-            cursor_y += VSTEP
-            cursor_x = HSTEP
-    return display_list
+class Layout:
+    def __init__(self, tokens: list[Text | Tag], width: int) -> None:
+        self.width = width
+        self.line: list[tuple[int, str, tkinter.font.Font]] = []
+        self.display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
+        self.cursor_x = HSTEP
+        self.cursor_y = VSTEP
+        self.weight: Literal["normal", "bold"] = "normal"
+        self.style: Literal["roman", "italic"] = "roman"
+        self.size = 12
+        self.in_pre = False
+
+        for tok in tokens:
+            self.token(tok)
+        self.flush()
+
+    def token(self, tok: Text | Tag):
+        if isinstance(tok, Text):
+            if self.in_pre:
+                for line in tok.text.split("\n"):
+                    logging.info(f"pre>{line}</pre")
+                    if line:
+                        self.word(line)
+                    else:
+                        self.flush()
+            else:
+                for word in tok.text.split():
+                    self.word(word)
+        elif tok.tag == "i":
+            self.style = "italic"
+        elif tok.tag == "/i":
+            self.style = "roman"
+        elif tok.tag == "b":
+            self.weight = "bold"
+        elif tok.tag == "/b":
+            self.weight = "normal"
+        elif tok.tag == "small":
+            self.size -= 2
+        elif tok.tag == "/small":
+            self.size += 2
+        elif tok.tag == "big":
+            self.size += 4
+        elif tok.tag == "/big":
+            self.size -= 4
+        elif tok.tag == "br":
+            self.flush()
+        elif tok.tag == "/p":
+            self.flush()
+            self.cursor_y += VSTEP
+        elif tok.tag == 'pre\nclass="sourceCode python"':
+            self.in_pre = True
+        elif tok.tag == 'pre\nclass="sourceCode python example"':
+            self.in_pre = True
+        elif tok.tag == 'pre\nclass="sourceCode python output"':
+            self.in_pre = True
+        elif tok.tag == "/pre":
+            self.in_pre = False
+            self.flush()
+
+    def word(self, word: str):
+        font = get_font(self.size, self.weight, self.style)
+        w = font.measure(word)
+
+        if self.cursor_x + w >= self.width - HSTEP:
+            self.flush()
+
+        self.line.append((self.cursor_x, word, font))
+        self.cursor_x += w + font.measure(" ")
+
+    def flush(self):
+        if not self.line:
+            return
+
+        # 各単語をベースラインに配置し、ディスプレイリストに追加
+        max_ascent = max([font.metrics("ascent") for _, _, font in self.line])
+        baseline = self.cursor_y + 1.25 * max_ascent
+        for x, word, font in self.line:
+            y = int(baseline - font.metrics("ascent"))
+            self.display_list.append((x, y, word, font))
+
+        # 次の行のy座標を更新
+        metrics = [font.metrics() for _, _, font in self.line]
+        max_descent = max([metric["descent"] for metric in metrics])
+        self.cursor_y = baseline + 1.25 * max_descent
+
+        self.cursor_x = HSTEP
+        self.line = []
 
 
 SCROLL_STEP = 100
@@ -167,17 +286,17 @@ class Browser:
 
     def draw(self):
         self.canvas.delete("all")
-        for x, y, c in self.display_list:
+        for x, y, word, font in self.display_list:
             if y > self.scroll + self.height:
                 continue
             if y + VSTEP < self.scroll:
                 continue
-            self.canvas.create_text(x, y - self.scroll, text=c)
+            self.canvas.create_text(x, y - self.scroll, text=word, font=font, anchor="nw")
 
     def load(self, url: URL):
         body = url.request()
-        self.text = lex(body)
-        self.display_list = layout(self.text, self.width)
+        self.tokens = lex(body)
+        self.display_list = Layout(self.tokens, self.width).display_list
         self.draw()
 
     def scrolldown(self, e: tkinter.Event):
@@ -195,7 +314,7 @@ class Browser:
         if self.width != e.width or self.height != e.height:
             self.width = e.width
             self.height = e.height
-            self.display_list = layout(self.text, self.width)
+            self.display_list = Layout(self.tokens, self.width).display_list
             self.draw()
 
 
