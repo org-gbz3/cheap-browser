@@ -129,13 +129,13 @@ WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 
 
-def layout(text: str) -> list[tuple[int, int, str]]:
+def layout(text: str, width: int) -> list[tuple[int, int, str]]:
     display_list: list[tuple[int, int, str]] = []
     cursor_x, cursor_y = HSTEP, VSTEP
     for c in text:
         display_list.append((cursor_x, cursor_y, c))
         cursor_x += HSTEP
-        if cursor_x >= WIDTH - HSTEP:
+        if cursor_x >= width - HSTEP:
             cursor_y += VSTEP
             cursor_x = HSTEP
     return display_list
@@ -146,23 +146,29 @@ SCROLL_STEP = 100
 
 class Browser:
     def __init__(self) -> None:
+        self.width = WIDTH
+        self.height = HEIGHT
         self.window = tkinter.Tk()
         self.canvas = tkinter.Canvas(
             self.window,
-            width=WIDTH,
-            height=HEIGHT,
+            width=self.width,
+            height=self.height,
         )
-        self.canvas.pack()
+        self.canvas.pack(
+            fill=tkinter.BOTH,  # BOTH: 水平方向と垂直方向に拡張、 X: 水平方向のみ、 Y: 垂直方向のみ
+            expand=True,  # 余剰スペースを割り当てる？
+        )
         self.scroll = 0
         self.window.bind("<Down>", self.scrolldown)
         self.window.bind("<Button-5>", self.scrolldown)
         self.window.bind("<Up>", self.scrollup)
         self.window.bind("<Button-4>", self.scrollup)
+        self.window.bind("<Configure>", self.window_resize)
 
     def draw(self):
         self.canvas.delete("all")
         for x, y, c in self.display_list:
-            if y > self.scroll + HEIGHT:
+            if y > self.scroll + self.height:
                 continue
             if y + VSTEP < self.scroll:
                 continue
@@ -170,8 +176,8 @@ class Browser:
 
     def load(self, url: URL):
         body = url.request()
-        text = lex(body)
-        self.display_list = layout(text)
+        self.text = lex(body)
+        self.display_list = layout(self.text, self.width)
         self.draw()
 
     def scrolldown(self, e: tkinter.Event):
@@ -183,6 +189,14 @@ class Browser:
         self.scroll -= min(SCROLL_STEP, self.scroll)
         logging.info(f"scroll={self.scroll}")
         self.draw()
+
+    def window_resize(self, e: tkinter.Event):
+        logging.info(f"window resize: {e}")
+        if self.width != e.width or self.height != e.height:
+            self.width = e.width
+            self.height = e.height
+            self.display_list = layout(self.text, self.width)
+            self.draw()
 
 
 if __name__ == "__main__":
