@@ -4,6 +4,7 @@ import ssl
 import tkinter
 import tkinter.font
 from datetime import datetime
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 
@@ -146,34 +147,52 @@ WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 
 
-def layout(tokens: list[Text | Tag], width: int) -> list[tuple[int, int, str, tkinter.font.Font]]:
-    display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
-    cursor_x, cursor_y = HSTEP, VSTEP
-    weight = "normal"
-    style = "roman"
-    for tok in tokens:
+class Layout:
+    def __init__(self, tokens: list[Text | Tag], width: int) -> None:
+        self.width = width
+        self.display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
+        self.cursor_x = HSTEP
+        self.cursor_y = VSTEP
+        self.weight: Literal["normal", "bold"] = "normal"
+        self.style: Literal["roman", "italic"] = "roman"
+        self.size = 12
+
+        for tok in tokens:
+            self.token(tok)
+
+    def token(self, tok: Text | Tag):
         if isinstance(tok, Text):
             for word in tok.text.split():
-                font = tkinter.font.Font(
-                    size=16,
-                    weight=weight,
-                    slant=style,
-                )
-                w = font.measure(word)
-                display_list.append((cursor_x, cursor_y, word, font))
-                cursor_x += w + font.measure(" ")
-                if cursor_x + w >= width - HSTEP:
-                    cursor_y += int(font.metrics("linespace") * 1.25)
-                    cursor_x = HSTEP
+                self.word(word)
         elif tok.tag == "i":
-            style = "italic"
+            self.style = "italic"
         elif tok.tag == "/i":
-            style = "roman"
+            self.style = "roman"
         elif tok.tag == "b":
-            weight = "bold"
+            self.weight = "bold"
         elif tok.tag == "/b":
-            weight = "normal"
-    return display_list
+            self.weight = "normal"
+        elif tok.tag == "small":
+            self.size -= 2
+        elif tok.tag == "/small":
+            self.size += 2
+        elif tok.tag == "big":
+            self.size += 4
+        elif tok.tag == "/big":
+            self.size -= 4
+
+    def word(self, word: str):
+        font = tkinter.font.Font(
+            size=self.size,
+            weight=self.weight,
+            slant=self.style,
+        )
+        w = font.measure(word)
+        self.display_list.append((self.cursor_x, self.cursor_y, word, font))
+        self.cursor_x += w + font.measure(" ")
+        if self.cursor_x + w >= self.width - HSTEP:
+            self.cursor_y += int(font.metrics("linespace") * 1.25)
+            self.cursor_x = HSTEP
 
 
 SCROLL_STEP = 100
@@ -212,7 +231,7 @@ class Browser:
     def load(self, url: URL):
         body = url.request()
         self.tokens = lex(body)
-        self.display_list = layout(self.tokens, self.width)
+        self.display_list = Layout(self.tokens, self.width).display_list
         self.draw()
 
     def scrolldown(self, e: tkinter.Event):
@@ -230,7 +249,7 @@ class Browser:
         if self.width != e.width or self.height != e.height:
             self.width = e.width
             self.height = e.height
-            self.display_list = layout(self.tokens, self.width)
+            self.display_list = Layout(self.tokens, self.width).display_list
             self.draw()
 
 
