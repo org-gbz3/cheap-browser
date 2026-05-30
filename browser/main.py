@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import socket
 import ssl
@@ -80,13 +82,24 @@ class URL:
 
 
 class Text:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, parent: Element) -> None:
         self.text = text
+        self.children = []
+        self.parent = parent
+
+    def __repr__(self) -> str:
+        return repr(self.text)
 
 
-class Tag:
-    def __init__(self, tag: str) -> None:
+class Element:
+    def __init__(self, tag: str, attributes: dict[str, str], parent: Element | None) -> None:
         self.tag = tag
+        self.attributes = attributes
+        self.children: list[Element | Text] = []
+        self.parent = parent
+
+    def __repr__(self) -> str:
+        return "<" + self.tag + ">"
 
 
 HTML_ENTITIES = {
@@ -110,40 +123,135 @@ HTML_ENTITIES = {
 }
 
 
-def lex(body: str) -> list[Text | Tag]:
-    out: list[Text | Tag] = []
-    buffer = ""
-    in_tag = False
-    in_ett = False
-    ett_name = ""
-    for c in body:
-        if c == "<":
-            in_tag = True
-            if buffer:
-                out.append(Text(buffer))
-                buffer = ""
-        elif c == ">":
-            in_tag = False
-            out.append(Tag(buffer))
-            buffer = ""
-        elif not in_tag:
-            if c == "&":
-                in_ett = True
-                ett_name = c
-            elif c == ";":
-                ett_name += c
-                in_ett = False
-                if ett_name in HTML_ENTITIES:
-                    buffer += HTML_ENTITIES[ett_name]
-                else:
-                    buffer += ett_name
-            elif in_ett:
-                ett_name += c
+def print_tree(node: Element | Text, indent: int = 0):
+    print(" " * indent, node)
+    for child in node.children:
+        print_tree(child, indent + 2)
+
+
+class HTMLParser:
+    def __init__(self, body: str) -> None:
+        self.body = body
+        self.unfinished: list[Element] = []
+
+        self.SELF_CLOSING_TAGS = [
+            "area",
+            "base",
+            "br",
+            "col",
+            "embed",
+            "hr",
+            "img",
+            "input",
+            "link",
+            "meta",
+            "param",
+            "source",
+            "track",
+            "wbr",
+        ]
+
+    def parse(self):
+        text = ""
+        in_tag = False
+        for c in self.body:
+            if c == "<":
+                in_tag = True
+                if text:
+                    self.add_text(text)
+                text = ""
+            elif c == ">":
+                in_tag = False
+                self.add_tag(text)
+                text = ""
             else:
-                buffer += c
+                text += c
+        if not in_tag and text:
+            self.add_text(text)
+        return self.finish()
+
+    def add_text(self, text: str):
+        if text.isspace():
+            return
+        parent = self.unfinished[-1]
+        node = Text(text, parent)
+        parent.children.append(node)
+
+    def add_tag(self, tag: str):
+        tag, attributes = self.get_attributes(tag)
+        if tag.startswith("!"):
+            return
+        if tag.startswith("/"):
+            if len(self.unfinished) == 1:
+                return
+            node = self.unfinished.pop()
+            parent = self.unfinished[-1]
+            parent.children.append(node)
+        elif tag in self.SELF_CLOSING_TAGS:
+            parent = self.unfinished[-1]
+            node = Element(tag, attributes, parent)
+            parent.children.append(node)
         else:
-            buffer += c
-    return out
+            parent = self.unfinished[-1] if self.unfinished else None
+            node = Element(tag, attributes, parent)
+            self.unfinished.append(node)
+
+    def finish(self):
+        while len(self.unfinished) > 1:
+            node = self.unfinished.pop()
+            parent = self.unfinished[-1]
+            parent.children.append(node)
+        return self.unfinished.pop()
+
+    def get_attributes(self, text: str) -> tuple[str, dict[str, str]]:
+        parts = text.split()
+        tag = parts[0].casefold()
+        attributes: dict[str, str] = {}
+        for attrpair in parts[1:]:
+            if "=" in attrpair:
+                key, value = attrpair.split("=", 1)
+                if len(value) > 2 and value[0] in ["'", '"']:
+                    value = value[1:-1]
+                attributes[key.casefold()] = value
+            else:
+                attributes[attrpair.casefold()] = ""
+        return tag, attributes
+
+
+# def lex(body: str) -> list[Text | Tag]:
+#     out: list[Text | Tag] = []
+#     buffer = ""
+#     in_tag = False
+#     in_ett = False
+#     ett_name = ""
+#     for c in body:
+#         if c == "<":
+#             in_tag = True
+#             if buffer:
+#                 out.append(Text(buffer))
+#                 buffer = ""
+#         elif c == ">":
+#             in_tag = False
+#             out.append(Tag(buffer))
+#             buffer = ""
+#         elif not in_tag:
+#             if c == "&":
+#                 in_ett = True
+#                 ett_name = c
+#             elif c == ";":
+#                 ett_name += c
+#                 in_ett = False
+#                 if ett_name in HTML_ENTITIES:
+#                     buffer += HTML_ENTITIES[ett_name]
+#                 else:
+#                     buffer += ett_name
+#             elif in_ett:
+#                 ett_name += c
+#             else:
+#                 buffer += c
+#         else:
+#             buffer += c
+#     return out
 
 
 FONTS: dict[
@@ -172,7 +280,7 @@ HSTEP, VSTEP = 13, 18
 
 
 class Layout:
-    def __init__(self, tokens: list[Text | Tag], width: int) -> None:
+    def __init__(self, tree: Element, width: int) -> None:
         self.width = width
         self.line: list[tuple[int, str, tkinter.font.Font]] = []
         self.display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
@@ -183,52 +291,64 @@ class Layout:
         self.size = 12
         self.in_pre = False
 
-        for tok in tokens:
-            self.token(tok)
+        self.recurse(tree)
         self.flush()
 
-    def token(self, tok: Text | Tag):
-        if isinstance(tok, Text):
-            if self.in_pre:
-                for line in tok.text.split("\n"):
-                    logging.info(f"pre>{line}</pre")
-                    if line:
-                        self.word(line)
-                    else:
-                        self.flush()
-            else:
-                for word in tok.text.split():
-                    self.word(word)
-        elif tok.tag == "i":
+    def recurse(self, tree: Element | Text):
+        if isinstance(tree, Text):
+            for word in tree.text.split():
+                self.word(word)
+        else:
+            self.opne_tag(tree.tag)
+            for child in tree.children:
+                self.recurse(child)
+            self.close_tag(tree.tag)
+
+    def opne_tag(self, tag: str):
+        if tag == "i":
             self.style = "italic"
-        elif tok.tag == "/i":
-            self.style = "roman"
-        elif tok.tag == "b":
+        elif tag == "b":
             self.weight = "bold"
-        elif tok.tag == "/b":
-            self.weight = "normal"
-        elif tok.tag == "small":
+        elif tag == "small":
             self.size -= 2
-        elif tok.tag == "/small":
-            self.size += 2
-        elif tok.tag == "big":
+        elif tag == "big":
             self.size += 4
-        elif tok.tag == "/big":
-            self.size -= 4
-        elif tok.tag == "br":
+        elif tag == "br":
             self.flush()
-        elif tok.tag == "/p":
+
+    def close_tag(self, tag: str):
+        if tag == "i":
+            self.style = "roman"
+        elif tag == "b":
+            self.weight = "normal"
+        elif tag == "small":
+            self.size += 2
+        elif tag == "big":
+            self.size -= 4
+        elif tag == "p":
             self.flush()
             self.cursor_y += VSTEP
-        elif tok.tag == 'pre\nclass="sourceCode python"':
-            self.in_pre = True
-        elif tok.tag == 'pre\nclass="sourceCode python example"':
-            self.in_pre = True
-        elif tok.tag == 'pre\nclass="sourceCode python output"':
-            self.in_pre = True
-        elif tok.tag == "/pre":
-            self.in_pre = False
-            self.flush()
+
+    # def token(self, tok: Text | Element):
+    #     if isinstance(tok, Text):
+    #         if self.in_pre:
+    #             for line in tok.text.split("\n"):
+    #                 if line:
+    #                     self.word(line)
+    #                 else:
+    #                     self.flush()
+    #         else:
+    #             for word in tok.text.split():
+    #                 self.word(word)
+    #     elif tok.tag == 'pre\nclass="sourceCode python"':
+    #         self.in_pre = True
+    #     elif tok.tag == 'pre\nclass="sourceCode python example"':
+    #         self.in_pre = True
+    #     elif tok.tag == 'pre\nclass="sourceCode python output"':
+    #         self.in_pre = True
+    #     elif tok.tag == "/pre":
+    #         self.in_pre = False
+    #         self.flush()
 
     def word(self, word: str):
         font = get_font(self.size, self.weight, self.style)
@@ -295,8 +415,9 @@ class Browser:
 
     def load(self, url: URL):
         body = url.request()
-        self.tokens = lex(body)
-        self.display_list = Layout(self.tokens, self.width).display_list
+        self.nodes = HTMLParser(body).parse()
+        # print_tree(self.nodes)
+        self.display_list = Layout(self.nodes, self.width).display_list
         self.draw()
 
     def scrolldown(self, e: tkinter.Event):
@@ -314,7 +435,7 @@ class Browser:
         if self.width != e.width or self.height != e.height:
             self.width = e.width
             self.height = e.height
-            self.display_list = Layout(self.tokens, self.width).display_list
+            self.display_list = Layout(self.nodes, self.width).display_list
             self.draw()
 
 
