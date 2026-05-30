@@ -78,6 +78,16 @@ class URL:
         return content
 
 
+class Text:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class Tag:
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+
+
 HTML_ENTITIES = {
     "&amp;": "&",
     "&lt;": "<",
@@ -98,16 +108,22 @@ HTML_ENTITIES = {
 }
 
 
-def lex(body: str) -> str:
-    text = ""
+def lex(body: str) -> list[Text | Tag]:
+    out: list[Text | Tag] = []
+    buffer = ""
     in_tag = False
     in_ett = False
     ett_name = ""
     for c in body:
         if c == "<":
             in_tag = True
+            if buffer:
+                out.append(Text(buffer))
+                buffer = ""
         elif c == ">":
             in_tag = False
+            out.append(Tag(buffer))
+            buffer = ""
         elif not in_tag:
             if c == "&":
                 in_ett = True
@@ -116,31 +132,47 @@ def lex(body: str) -> str:
                 ett_name += c
                 in_ett = False
                 if ett_name in HTML_ENTITIES:
-                    text += HTML_ENTITIES[ett_name]
+                    buffer += HTML_ENTITIES[ett_name]
                 else:
-                    text += ett_name
+                    buffer += ett_name
             elif in_ett:
                 ett_name += c
             else:
-                text += c
-    return text
+                buffer += c
+    return out
 
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 
 
-def layout(text: str, width: int) -> list[tuple[int, int, str]]:
-    display_list: list[tuple[int, int, str]] = []
+def layout(tokens: list[Text | Tag], width: int) -> list[tuple[int, int, str, tkinter.font.Font]]:
+    display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
     cursor_x, cursor_y = HSTEP, VSTEP
-    font = tkinter.font.Font()
-    for word in text.split():
-        w = font.measure(word)
-        display_list.append((cursor_x, cursor_y, word))
-        cursor_x += w + font.measure(" ")
-        if cursor_x + w >= width - HSTEP:
-            cursor_y += int(font.metrics("linespace") * 1.25)
-            cursor_x = HSTEP
+    weight = "normal"
+    style = "roman"
+    for tok in tokens:
+        if isinstance(tok, Text):
+            for word in tok.text.split():
+                font = tkinter.font.Font(
+                    size=16,
+                    weight=weight,
+                    slant=style,
+                )
+                w = font.measure(word)
+                display_list.append((cursor_x, cursor_y, word, font))
+                cursor_x += w + font.measure(" ")
+                if cursor_x + w >= width - HSTEP:
+                    cursor_y += int(font.metrics("linespace") * 1.25)
+                    cursor_x = HSTEP
+        elif tok.tag == "i":
+            style = "italic"
+        elif tok.tag == "/i":
+            style = "roman"
+        elif tok.tag == "b":
+            weight = "bold"
+        elif tok.tag == "/b":
+            weight = "normal"
     return display_list
 
 
@@ -170,17 +202,17 @@ class Browser:
 
     def draw(self):
         self.canvas.delete("all")
-        for x, y, c in self.display_list:
+        for x, y, word, font in self.display_list:
             if y > self.scroll + self.height:
                 continue
             if y + VSTEP < self.scroll:
                 continue
-            self.canvas.create_text(x, y - self.scroll, text=c, anchor="nw")
+            self.canvas.create_text(x, y - self.scroll, text=word, font=font, anchor="nw")
 
     def load(self, url: URL):
         body = url.request()
-        self.text = lex(body)
-        self.display_list = layout(self.text, self.width)
+        self.tokens = lex(body)
+        self.display_list = layout(self.tokens, self.width)
         self.draw()
 
     def scrolldown(self, e: tkinter.Event):
@@ -198,7 +230,7 @@ class Browser:
         if self.width != e.width or self.height != e.height:
             self.width = e.width
             self.height = e.height
-            self.display_list = layout(self.text, self.width)
+            self.display_list = layout(self.tokens, self.width)
             self.draw()
 
 
