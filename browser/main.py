@@ -2,6 +2,7 @@ import logging
 import socket
 import ssl
 import tkinter
+import tkinter.font
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -132,11 +133,13 @@ HSTEP, VSTEP = 13, 18
 def layout(text: str, width: int) -> list[tuple[int, int, str]]:
     display_list: list[tuple[int, int, str]] = []
     cursor_x, cursor_y = HSTEP, VSTEP
-    for c in text:
-        display_list.append((cursor_x, cursor_y, c))
-        cursor_x += HSTEP
-        if cursor_x >= width - HSTEP:
-            cursor_y += VSTEP
+    font = tkinter.font.Font()
+    for word in text.split():
+        w = font.measure(word)
+        display_list.append((cursor_x, cursor_y, word))
+        cursor_x += w + font.measure(" ")
+        if cursor_x + w >= width - HSTEP:
+            cursor_y += int(font.metrics("linespace") * 1.25)
             cursor_x = HSTEP
     return display_list
 
@@ -172,7 +175,7 @@ class Browser:
                 continue
             if y + VSTEP < self.scroll:
                 continue
-            self.canvas.create_text(x, y - self.scroll, text=c)
+            self.canvas.create_text(x, y - self.scroll, text=c, anchor="nw")
 
     def load(self, url: URL):
         body = url.request()
