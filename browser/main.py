@@ -106,6 +106,7 @@ HTML_ENTITIES = {
     "&pound;": "£",
     "&euro;": "€",
     "&deg;": "°",
+    "&#39;": '"',
 }
 
 
@@ -180,6 +181,7 @@ class Layout:
         self.weight: Literal["normal", "bold"] = "normal"
         self.style: Literal["roman", "italic"] = "roman"
         self.size = 12
+        self.in_pre = False
 
         for tok in tokens:
             self.token(tok)
@@ -187,8 +189,16 @@ class Layout:
 
     def token(self, tok: Text | Tag):
         if isinstance(tok, Text):
-            for word in tok.text.split():
-                self.word(word)
+            if self.in_pre:
+                for line in tok.text.split("\n"):
+                    logging.info(f"pre>{line}</pre")
+                    if line:
+                        self.word(line)
+                    else:
+                        self.flush()
+            else:
+                for word in tok.text.split():
+                    self.word(word)
         elif tok.tag == "i":
             self.style = "italic"
         elif tok.tag == "/i":
@@ -210,6 +220,15 @@ class Layout:
         elif tok.tag == "/p":
             self.flush()
             self.cursor_y += VSTEP
+        elif tok.tag == 'pre\nclass="sourceCode python"':
+            self.in_pre = True
+        elif tok.tag == 'pre\nclass="sourceCode python example"':
+            self.in_pre = True
+        elif tok.tag == 'pre\nclass="sourceCode python output"':
+            self.in_pre = True
+        elif tok.tag == "/pre":
+            self.in_pre = False
+            self.flush()
 
     def word(self, word: str):
         font = get_font(self.size, self.weight, self.style)
