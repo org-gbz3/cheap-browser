@@ -145,6 +145,27 @@ def lex(body: str) -> list[Text | Tag]:
     return out
 
 
+FONTS: dict[
+    tuple[int, Literal["normal", "bold"], str], tuple[tkinter.font.Font, tkinter.Label]
+] = {}
+
+
+def get_font(
+    size: int, weight: Literal["normal", "bold"], style: Literal["roman", "italic"]
+) -> tkinter.font.Font:
+    key = (size, weight, style)
+    if key not in FONTS:
+        font = tkinter.font.Font(
+            size=size,
+            weight=weight,
+            slant=style,
+        )
+        # パフォーマンス向上のためのLabelオブジェクト（Tkinter推奨）
+        label = tkinter.Label(font=font)
+        FONTS[key] = (font, label)
+    return FONTS[key][0]
+
+
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 
@@ -191,11 +212,7 @@ class Layout:
             self.cursor_y += VSTEP
 
     def word(self, word: str):
-        font = tkinter.font.Font(
-            size=self.size,
-            weight=self.weight,
-            slant=self.style,
-        )
+        font = get_font(self.size, self.weight, self.style)
         w = font.measure(word)
 
         if self.cursor_x + w >= self.width - HSTEP:
