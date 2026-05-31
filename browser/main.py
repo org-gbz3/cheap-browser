@@ -102,27 +102,6 @@ class Element:
         return "<" + self.tag + ">"
 
 
-HTML_ENTITIES = {
-    "&amp;": "&",
-    "&lt;": "<",
-    "&gt;": ">",
-    "&quot;": '"',
-    "&apos;": "'",
-    "&nbsp;": " ",
-    "&ndash;": "–",
-    "&mdash;": "—",
-    "&copy;": "©",
-    "&reg;": "®",
-    "&trade;": "™",
-    "&asymp;": "≈",
-    "&ne;": "≠",
-    "&pound;": "£",
-    "&euro;": "€",
-    "&deg;": "°",
-    "&#39;": '"',
-}
-
-
 def print_tree(node: Element | Text, indent: int = 0):
     print(" " * indent, node)
     for child in node.children:
@@ -150,6 +129,25 @@ class HTMLParser:
             "track",
             "wbr",
         ]
+        self.HTML_ENTITIES = {
+            "&amp;": "&",
+            "&lt;": "<",
+            "&gt;": ">",
+            "&quot;": '"',
+            "&apos;": "'",
+            "&nbsp;": " ",
+            "&ndash;": "–",
+            "&mdash;": "—",
+            "&copy;": "©",
+            "&reg;": "®",
+            "&trade;": "™",
+            "&asymp;": "≈",
+            "&ne;": "≠",
+            "&pound;": "£",
+            "&euro;": "€",
+            "&deg;": "°",
+            "&#39;": '"',
+        }
 
     def parse(self):
         text = ""
@@ -166,6 +164,11 @@ class HTMLParser:
                 text = ""
             else:
                 text += c
+                if c == ";":
+                    # HTMLエンティティを文字列に変換
+                    for k, v in self.HTML_ENTITIES.items():
+                        if text.endswith(k):
+                            text = text[: -(len(k))] + v
         if not in_tag and text:
             self.add_text(text)
         return self.finish()
@@ -216,42 +219,6 @@ class HTMLParser:
             else:
                 attributes[attrpair.casefold()] = ""
         return tag, attributes
-
-
-# def lex(body: str) -> list[Text | Tag]:
-#     out: list[Text | Tag] = []
-#     buffer = ""
-#     in_tag = False
-#     in_ett = False
-#     ett_name = ""
-#     for c in body:
-#         if c == "<":
-#             in_tag = True
-#             if buffer:
-#                 out.append(Text(buffer))
-#                 buffer = ""
-#         elif c == ">":
-#             in_tag = False
-#             out.append(Tag(buffer))
-#             buffer = ""
-#         elif not in_tag:
-#             if c == "&":
-#                 in_ett = True
-#                 ett_name = c
-#             elif c == ";":
-#                 ett_name += c
-#                 in_ett = False
-#                 if ett_name in HTML_ENTITIES:
-#                     buffer += HTML_ENTITIES[ett_name]
-#                 else:
-#                     buffer += ett_name
-#             elif in_ett:
-#                 ett_name += c
-#             else:
-#                 buffer += c
-#         else:
-#             buffer += c
-#     return out
 
 
 FONTS: dict[
