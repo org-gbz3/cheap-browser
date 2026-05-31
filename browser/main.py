@@ -10,6 +10,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 type DisplayItem = tuple[int, int, str, tkinter.font.Font]
+type DrawItem = DrawText | DrawRect
 
 
 # JST タイムゾーンの設定
@@ -343,7 +344,7 @@ class DocumentLayout:
         self.display_list = child.display_list
         self.height = child.height
 
-    def paint(self) -> list[DisplayItem]:
+    def paint(self) -> list[DrawItem]:
         return []
 
     def __repr__(self) -> str:
@@ -502,11 +503,52 @@ class BlockLayout:
         self.cursor_x = 0
         self.line = []
 
-    def paint(self) -> list[DisplayItem]:
-        return self.display_list
+    def paint(self):
+        cmds: list[DrawItem] = []
+        if isinstance(self.node, Element) and self.node.tag == "pre":
+            x2, y2 = self.x + self.width, self.y + self.height
+            rect = DrawRect(self.x, self.y, x2, y2, "gray")
+            cmds.append(rect)
+        if self.layout_mode() == "inline":
+            for x, y, word, font in self.display_list:
+                cmds.append(DrawText(x, y, word, font))
+        return cmds
 
 
-def paint_tree(layout_object: DocumentLayout | BlockLayout, display_list: list[DisplayItem]):
+class DrawText:
+    def __init__(self, x1: int, y1: int, text: str, font: tkinter.font.Font):
+        self.top = y1
+        self.left = x1
+        self.text = text
+        self.font = font
+        self.bottom = y1 + font.metrics("linespace")
+
+    def execute(self, scroll: int, canvas: tkinter.Canvas):
+        canvas.create_text(
+            self.left, self.top - scroll, text=self.text, font=self.font, anchor="nw"
+        )
+
+
+class DrawRect:
+    def __init__(self, x1: int, y1: int, x2: int, y2: int, color: str):
+        self.top = y1
+        self.left = x1
+        self.bottom = y2
+        self.right = x2
+        self.color = color
+
+    def execute(self, scroll: int, canvas: tkinter.Canvas):
+        canvas.create_rectangle(
+            self.left,
+            self.top - scroll,
+            self.right,
+            self.bottom - scroll,
+            width=0,
+            fill=self.color,
+        )
+
+
+def paint_tree(layout_object: DocumentLayout | BlockLayout, display_list: list[DrawItem]):
     display_list.extend(layout_object.paint())
     for child in layout_object.children:
         paint_tree(child, display_list)
@@ -538,12 +580,12 @@ class Browser:
 
     def draw(self):
         self.canvas.delete("all")
-        for x, y, word, font in self.display_list:
-            if y > self.scroll + self.height:
+        for cmd in self.display_list:
+            if cmd.top > self.scroll + self.height:
                 continue
-            if y + VSTEP < self.scroll:
+            if cmd.bottom < self.scroll:
                 continue
-            self.canvas.create_text(x, y - self.scroll, text=word, font=font, anchor="nw")
+            cmd.execute(self.scroll, self.canvas)
 
     def load(self, url: URL):
         body = url.request()
@@ -552,7 +594,7 @@ class Browser:
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
         # print_layout_tree(self.document)
-        self.display_list: list[DisplayItem] = []
+        self.display_list: list[DrawItem] = []
         paint_tree(self.document, self.display_list)
         self.draw()
 
