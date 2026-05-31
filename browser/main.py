@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import socket
 import ssl
 import tkinter
 import tkinter.font
+from ctypes.wintypes import BOOL
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -558,7 +560,9 @@ SCROLL_STEP = 100
 
 
 class Browser:
-    def __init__(self) -> None:
+    def __init__(self, html_tree: BOOL, layout_tree: BOOL) -> None:
+        self.html_tree = html_tree
+        self.layout_tree = layout_tree
         self.width = WIDTH
         self.height = HEIGHT
         self.window = tkinter.Tk()
@@ -590,16 +594,21 @@ class Browser:
     def load(self, url: URL):
         body = url.request()
         self.nodes = HTMLParser(body).parse()
-        # print_html_tree(self.nodes)
+        if self.html_tree:
+            print_html_tree(self.nodes)
+
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
-        # print_layout_tree(self.document)
+        if self.layout_tree:
+            print_layout_tree(self.document)
+
         self.display_list: list[DrawItem] = []
         paint_tree(self.document, self.display_list)
         self.draw()
 
     def scrolldown(self, e: tkinter.Event):
-        self.scroll += SCROLL_STEP
+        max_y = max(self.document.height + 2 * VSTEP - HEIGHT, 0)
+        self.scroll = min(self.scroll + SCROLL_STEP, max_y)
         logging.info(f"scroll={self.scroll}")
         self.draw()
 
@@ -617,8 +626,30 @@ class Browser:
     #         self.draw()
 
 
-if __name__ == "__main__":
-    import sys
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="cheap-browser",
+        description="A tiny educational browser",
+    )
+    parser.add_argument("url", help="例: https://example.com")
+    parser.add_argument(
+        "--html-tree",
+        action="store_true",
+        help="HTMLツリーを出力",
+    )
+    parser.add_argument(
+        "--layout-tree",
+        action="store_true",
+        help="レイアウトツリーを出力",
+    )
+    return parser.parse_args()
 
-    Browser().load(URL(sys.argv[1]))
+
+if __name__ == "__main__":
+    args = parse_args()
+    browser = Browser(
+        args.html_tree,
+        args.layout_tree,
+    )
+    browser.load(URL(args.url))
     tkinter.mainloop()
