@@ -102,10 +102,16 @@ class Element:
         return "<" + self.tag + ">"
 
 
-def print_tree(node: Element | Text, indent: int = 0):
+def print_html_tree(node: Element | Text, indent: int = 0):
     print(" " * indent, node)
     for child in node.children:
-        print_tree(child, indent + 2)
+        print_html_tree(child, indent + 2)
+
+
+def print_layout_tree(node: DocumentLayout | BlockLayout, indent: int = 0):
+    print(" " * indent, node)
+    for child in node.children:
+        print_layout_tree(child, indent + 2)
 
 
 class HTMLParser:
@@ -274,6 +280,45 @@ def get_font(
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
+BLOCK_ELEMENTS = [
+    "html",
+    "body",
+    "article",
+    "section",
+    "nav",
+    "aside",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hgroup",
+    "header",
+    "footer",
+    "address",
+    "p",
+    "hr",
+    "pre",
+    "blockquote",
+    "ol",
+    "ul",
+    "menu",
+    "li",
+    "dl",
+    "dt",
+    "dd",
+    "figure",
+    "figcaption",
+    "main",
+    "div",
+    "table",
+    "form",
+    "fieldset",
+    "legend",
+    "details",
+    "summary",
+]
 
 
 class DocumentLayout:
@@ -288,26 +333,61 @@ class DocumentLayout:
         child.layout()
         self.display_list = child.display_list
 
+    def __repr__(self) -> str:
+        return repr(self.node)
+
 
 class BlockLayout:
-    def __init__(self, node: Element, parent: DocumentLayout, previous: Element | None) -> None:
+    def __init__(
+        self,
+        node: Element | Text,
+        parent: BlockLayout | DocumentLayout,
+        previous: BlockLayout | None,
+    ) -> None:
         self.node = node
         self.parent = parent
         self.previous = previous
-        self.children = []
+        self.children: list[BlockLayout] = []
+        self.display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
+
+    def __repr__(self) -> str:
+        return repr(self.node) + f" >> display_list={self.display_list}"
+
+    def layout_mode(self):
+        if isinstance(self.node, Text):
+            return "inline"
+        elif any(
+            [
+                isinstance(child, Element) and child.tag in BLOCK_ELEMENTS
+                for child in self.node.children
+            ]
+        ):
+            return "block"
+        elif self.node.children:
+            return "inline"
+        else:
+            return "block"
 
     def layout(self):
-        self.line: list[tuple[int, str, tkinter.font.Font]] = []
-        self.display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
-        self.cursor_x = HSTEP
-        self.cursor_y = VSTEP
-        self.weight: Literal["normal", "bold"] = "normal"
-        self.style: Literal["roman", "italic"] = "roman"
-        self.size = 12
-        self.in_pre = False
+        mode = self.layout_mode()
+        if mode == "block":
+            previous = None
+            for child in self.node.children:
+                next = BlockLayout(child, self, previous)
+                self.children.append(next)
+                previous = next
+        else:
+            self.cursor_x = 0
+            self.cursor_y = 0
+            self.weight: Literal["normal", "bold"] = "normal"
+            self.style: Literal["roman", "italic"] = "roman"
+            self.size = 12
 
-        self.recurse(self.node)
-        self.flush()
+            self.line: list[tuple[int, str, tkinter.font.Font]] = []
+            self.recurse(self.node)
+            self.flush()
+        for child in self.children:
+            child.layout()
 
     def recurse(self, tree: Element | Text):
         if isinstance(tree, Text):
@@ -421,6 +501,9 @@ class Browser:
 
     def draw(self):
         self.canvas.delete("all")
+        logging.info(
+            f" ## scroll={self.scroll} height={self.height} len={len(self.document.display_list)}"
+        )
         for x, y, word, font in self.document.display_list:
             if y > self.scroll + self.height:
                 continue
@@ -431,9 +514,10 @@ class Browser:
     def load(self, url: URL):
         body = url.request()
         self.nodes = HTMLParser(body).parse()
-        # print_tree(self.nodes)
+        # print_html_tree(self.nodes)
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
+        print_layout_tree(self.document)
         self.draw()
 
     def scrolldown(self, e: tkinter.Event):
