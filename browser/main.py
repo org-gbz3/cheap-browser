@@ -276,9 +276,27 @@ WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 
 
-class Layout:
-    def __init__(self, tree: Element, width: int) -> None:
-        self.width = width
+class DocumentLayout:
+    def __init__(self, node: Element) -> None:
+        self.node = node
+        self.parent = None
+        self.children: list[BlockLayout] = []
+
+    def layout(self):
+        child = BlockLayout(self.node, self, None)
+        self.children.append(child)
+        child.layout()
+        self.display_list = child.display_list
+
+
+class BlockLayout:
+    def __init__(self, node: Element, parent: DocumentLayout, previous: Element | None) -> None:
+        self.node = node
+        self.parent = parent
+        self.previous = previous
+        self.children = []
+
+    def layout(self):
         self.line: list[tuple[int, str, tkinter.font.Font]] = []
         self.display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
         self.cursor_x = HSTEP
@@ -288,7 +306,7 @@ class Layout:
         self.size = 12
         self.in_pre = False
 
-        self.recurse(tree)
+        self.recurse(self.node)
         self.flush()
 
     def recurse(self, tree: Element | Text):
@@ -351,7 +369,7 @@ class Layout:
         font = get_font(self.size, self.weight, self.style)
         w = font.measure(word)
 
-        if self.cursor_x + w >= self.width - HSTEP:
+        if self.cursor_x + w >= WIDTH - HSTEP:
             self.flush()
 
         self.line.append((self.cursor_x, word, font))
@@ -399,11 +417,11 @@ class Browser:
         self.window.bind("<Button-5>", self.scrolldown)
         self.window.bind("<Up>", self.scrollup)
         self.window.bind("<Button-4>", self.scrollup)
-        self.window.bind("<Configure>", self.window_resize)
+        # self.window.bind("<Configure>", self.window_resize)
 
     def draw(self):
         self.canvas.delete("all")
-        for x, y, word, font in self.display_list:
+        for x, y, word, font in self.document.display_list:
             if y > self.scroll + self.height:
                 continue
             if y + VSTEP < self.scroll:
@@ -414,7 +432,8 @@ class Browser:
         body = url.request()
         self.nodes = HTMLParser(body).parse()
         # print_tree(self.nodes)
-        self.display_list = Layout(self.nodes, self.width).display_list
+        self.document = DocumentLayout(self.nodes)
+        self.document.layout()
         self.draw()
 
     def scrolldown(self, e: tkinter.Event):
@@ -427,13 +446,13 @@ class Browser:
         logging.info(f"scroll={self.scroll}")
         self.draw()
 
-    def window_resize(self, e: tkinter.Event):
-        logging.info(f"window resize: {e}")
-        if self.width != e.width or self.height != e.height:
-            self.width = e.width
-            self.height = e.height
-            self.display_list = Layout(self.nodes, self.width).display_list
-            self.draw()
+    # def window_resize(self, e: tkinter.Event):
+    #     logging.info(f"window resize: {e}")
+    #     if self.width != e.width or self.height != e.height:
+    #         self.width = e.width
+    #         self.height = e.height
+    #         self.document.layout()
+    #         self.draw()
 
 
 if __name__ == "__main__":
