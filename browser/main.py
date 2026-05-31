@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+type DisplayItem = tuple[int, int, str, tkinter.font.Font]
+
 
 # JST タイムゾーンの設定
 def jst_converter(*args: float | None):
@@ -341,7 +343,7 @@ class DocumentLayout:
         self.display_list = child.display_list
         self.height = child.height
 
-    def paint(self) -> list[tuple[int, int, str, tkinter.font.Font]]:
+    def paint(self) -> list[DisplayItem]:
         return []
 
     def __repr__(self) -> str:
@@ -359,7 +361,7 @@ class BlockLayout:
         self.parent = parent
         self.previous = previous
         self.children: list[BlockLayout] = []
-        self.display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
+        self.display_list: list[DisplayItem] = []
         self.x = 0
         self.y = 0
         self.width = 0
@@ -500,14 +502,11 @@ class BlockLayout:
         self.cursor_x = 0
         self.line = []
 
-    def paint(self) -> list[tuple[int, int, str, tkinter.font.Font]]:
+    def paint(self) -> list[DisplayItem]:
         return self.display_list
 
 
-def paint_tree(
-    layout_object: DocumentLayout | BlockLayout,
-    display_list: list[tuple[int, int, str, tkinter.font.Font]],
-):
+def paint_tree(layout_object: DocumentLayout | BlockLayout, display_list: list[DisplayItem]):
     display_list.extend(layout_object.paint())
     for child in layout_object.children:
         paint_tree(child, display_list)
@@ -553,7 +552,7 @@ class Browser:
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
         # print_layout_tree(self.document)
-        self.display_list: list[tuple[int, int, str, tkinter.font.Font]] = []
+        self.display_list: list[DisplayItem] = []
         paint_tree(self.document, self.display_list)
         self.draw()
 
