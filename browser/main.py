@@ -91,6 +91,7 @@ class Text:
         self.text = text
         self.children = []
         self.parent = parent
+        self.style: dict[str, str] | None
 
     def __repr__(self) -> str:
         return repr(self.text)
@@ -102,6 +103,7 @@ class Element:
         self.attributes = attributes
         self.children: list[Element | Text] = []
         self.parent = parent
+        self.style: dict[str, str] | None
 
     def __repr__(self) -> str:
         return "<" + self.tag + ">"
@@ -262,6 +264,67 @@ class HTMLParser:
                 break
 
 
+class CSSParser:
+    def __init__(self, s: str):
+        self.s = s
+        self.i = 0
+
+    def whitespace(self):
+        while self.i < len(self.s) and self.s[self.i].isspace():
+            self.i += 1
+
+    def word(self) -> str:
+        start = self.i
+        while self.i < len(self.s):
+            # プロパティ名として有効な文字の間はiを進める
+            if self.s[self.i].isalnum() or self.s[self.i] in "#-.%":
+                self.i += 1
+            else:
+                break
+        if not (self.i > start):
+            raise Exception("Parsing error")
+        return self.s[start : self.i]
+
+    def literal(self, literal: str):
+        if not (self.i < len(self.s) and self.s[self.i] == literal):
+            raise Exception("Parsing error")
+        self.i += 1
+
+    def pair(self) -> tuple[str, str]:
+        prop = self.word()
+        self.whitespace()
+        self.literal(":")
+        self.whitespace()
+        val = self.word()
+        return prop.casefold(), val
+
+    def body(self) -> dict[str, str]:
+        pairs: dict[str, str] = {}
+        while self.i < len(self.s):
+            try:
+                prop, val = self.pair()
+                pairs[prop.casefold()] = val
+                self.whitespace()
+                self.literal(";")
+                self.whitespace()
+            except Exception:
+                why = self.ignore_until([";"])
+                if why == ";":
+                    self.literal(why)
+                    self.whitespace()
+                else:
+                    break
+        return pairs
+
+    def ignore_until(self, chars: list[str]) -> str | None:
+        while self.i < len(self.s):
+            if self.s[self.i] in chars:
+                return self.s[self.i]
+            else:
+                self.i += 1
+        return None
+
+
 FONTS: dict[
     tuple[int, Literal["normal", "bold"], str], tuple[tkinter.font.Font, tkinter.Label]
 ] = {}
@@ -281,6 +344,17 @@ def get_font(
         label = tkinter.Label(font=font)
         FONTS[key] = (font, label)
     return FONTS[key][0]
+
+
+def style(node: Element | Text):
+    node.style = {}
+    if isinstance(node, Element) and "style" in node.attributes:
+        pairs = CSSParser(node.attributes["style"]).body()
+        for property, value in pairs.items():
+            node.style[property] = value
+
+    for child in node.children:
+        style(child)
 
 
 WIDTH, HEIGHT = 800, 600
@@ -507,10 +581,19 @@ class BlockLayout:
 
     def paint(self):
         cmds: list[DrawItem] = []
+
         if isinstance(self.node, Element) and self.node.tag == "pre":
             x2, y2 = self.x + self.width, self.y + self.height
             rect = DrawRect(self.x, self.y, x2, y2, "gray")
             cmds.append(rect)
+
+        if self.node.style:
+            bgcolor = self.node.style.get("background-color", "transparent")
+            if bgcolor != "transparent":
+                x2, y2 = self.x + self.width, self.y + self.height
+                rect = DrawRect(self.x, self.y, x2, y2, bgcolor)
+                cmds.append(rect)
+
         if self.layout_mode() == "inline":
             for x, y, word, font in self.display_list:
                 cmds.append(DrawText(x, y, word, font))
@@ -596,6 +679,8 @@ class Browser:
         self.nodes = HTMLParser(body).parse()
         if self.html_tree:
             print_html_tree(self.nodes)
+
+        style(self.nodes)
 
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
