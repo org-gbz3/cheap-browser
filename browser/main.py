@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 type DisplayItem = tuple[int, int, str, tkinter.font.Font]
 type DrawItem = DrawText | DrawRect
-type CssRules = list[tuple[TagSelector | DescendantSelector, dict[str, str]]]
+type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
 
 
 # JST タイムゾーンの設定
@@ -361,7 +361,7 @@ class CSSParser:
         return out
 
     def parse(self):
-        rules: CssRules = []
+        rules: list[CssRule] = []
         while self.i < len(self.s):
             try:
                 self.whitespace()
@@ -384,6 +384,7 @@ class CSSParser:
 class TagSelector:
     def __init__(self, tag: str):
         self.tag = tag
+        self.priority = 1
 
     def __repr__(self) -> str:
         return self.tag
@@ -396,6 +397,7 @@ class DescendantSelector:
     def __init__(self, ancestor: TagSelector | DescendantSelector, descendant: TagSelector):
         self.ancestor = ancestor  # 先祖
         self.descendant = descendant  # 子孫
+        self.priority = ancestor.priority + descendant.priority
 
     def __repr__(self) -> str:
         return f"{self.ancestor} {self.descendant}"
@@ -438,7 +440,7 @@ def get_font(
 DEFAULT_STYLE_SHEET = CSSParser(open("browser/browser.css").read()).parse()
 
 
-def style(node: Element | Text, rules: CssRules):
+def style(node: Element | Text, rules: list[CssRule]):
     node.style = {}
 
     # スタイルシートをWebページに適用。
@@ -457,6 +459,11 @@ def style(node: Element | Text, rules: CssRules):
 
     for child in node.children:
         style(child, rules)
+
+
+def cascade_priority(rule: CssRule):
+    selector, _ = rule
+    return selector.priority
 
 
 WIDTH, HEIGHT = 800, 600
@@ -796,11 +803,11 @@ class Browser:
             logging.info(f"css found. [{style_url}]")
             try:
                 body = style_url.request()
-            except:
+            except Exception:
                 continue
             css_rules.extend(CSSParser(body).parse())
         logging.info(f"css = {css_rules}")
-        style(self.nodes, css_rules)
+        style(self.nodes, sorted(css_rules, key=cascade_priority))
 
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
