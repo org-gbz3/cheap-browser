@@ -11,8 +11,10 @@ from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-type DisplayItem = tuple[int, int, str, tkinter.font.Font]
+type DisplayItem = tuple[int, int, str, tkinter.font.Font, str]
 type DrawItem = DrawText | DrawRect
+type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
+type Node = Element | Text
 
 
 # JST タイムゾーンの設定
@@ -85,12 +87,31 @@ class URL:
 
         return content
 
+    def resolve(self, url: str):
+        if "://" in url:
+            return URL(url)
+        if not url.startswith("/"):
+            dir, _ = self.path.rsplit("/", 1)
+            while url.startswith("../"):
+                _, url = url.split("/", 1)
+                if "/" in dir:
+                    dir, _ = dir.rsplit("/", 1)
+            url = dir + "/" + url
+        if url.startswith("//"):
+            return URL(self.scheme + ":" + url)
+        else:
+            return URL(self.scheme + "://" + self.host + ":" + str(self.port) + url)
+
+    def __repr__(self) -> str:
+        return f"{self.scheme}://{self.host}:{self.port}{self.path}"
+
 
 class Text:
     def __init__(self, text: str, parent: Element) -> None:
         self.text = text
         self.children = []
         self.parent = parent
+        self.style: dict[str, str]
 
     def __repr__(self) -> str:
         return repr(self.text)
@@ -100,14 +121,15 @@ class Element:
     def __init__(self, tag: str, attributes: dict[str, str], parent: Element | None) -> None:
         self.tag = tag
         self.attributes = attributes
-        self.children: list[Element | Text] = []
+        self.children: list[Node] = []
         self.parent = parent
+        self.style: dict[str, str]
 
     def __repr__(self) -> str:
         return "<" + self.tag + ">"
 
 
-def print_html_tree(node: Element | Text, indent: int = 0):
+def print_html_tree(node: Node, indent: int = 0):
     print(" " * indent, node)
     for child in node.children:
         print_html_tree(child, indent + 2)
@@ -117,6 +139,13 @@ def print_layout_tree(node: DocumentLayout | BlockLayout, indent: int = 0):
     print(" " * indent, node)
     for child in node.children:
         print_layout_tree(child, indent + 2)
+
+
+def tree_to_list(tree: Node, list: list[Node]):
+    list.append(tree)
+    for child in tree.children:
+        tree_to_list(child, list)
+    return list
 
 
 class HTMLParser:
@@ -262,6 +291,132 @@ class HTMLParser:
                 break
 
 
+class CSSParser:
+    def __init__(self, s: str):
+        self.s = s
+        self.i = 0
+
+    def whitespace(self):
+        while self.i < len(self.s) and self.s[self.i].isspace():
+            self.i += 1
+
+    def word(self) -> str:
+        start = self.i
+        while self.i < len(self.s):
+            # プロパティ名として有効な文字の間はiを進める
+            if self.s[self.i].isalnum() or self.s[self.i] in "#-.%":
+                self.i += 1
+            else:
+                break
+        if not (self.i > start):
+            raise Exception("Parsing error")
+        return self.s[start : self.i]
+
+    def literal(self, literal: str):
+        if not (self.i < len(self.s) and self.s[self.i] == literal):
+            raise Exception("Parsing error")
+        self.i += 1
+
+    def pair(self) -> tuple[str, str]:
+        prop = self.word()
+        self.whitespace()
+        self.literal(":")
+        self.whitespace()
+        val = self.word()
+        return prop.casefold(), val
+
+    def body(self) -> dict[str, str]:
+        pairs: dict[str, str] = {}
+        while self.i < len(self.s) and self.s[self.i] != "}":
+            try:
+                prop, val = self.pair()
+                pairs[prop.casefold()] = val
+                self.whitespace()
+                self.literal(";")
+                self.whitespace()
+            except Exception:
+                why = self.ignore_until([";", "}"])
+                if why == ";":
+                    self.literal(why)
+                    self.whitespace()
+                else:
+                    break
+        return pairs
+
+    def ignore_until(self, chars: list[str]) -> str | None:
+        while self.i < len(self.s):
+            if self.s[self.i] in chars:
+                return self.s[self.i]
+            else:
+                self.i += 1
+        return None
+
+    def selector(self):
+        out = TagSelector(self.word().casefold())
+        self.whitespace()
+        while self.i < len(self.s) and self.s[self.i] != "{":
+            tag = self.word()
+            descendant = TagSelector(tag.casefold())
+            out = DescendantSelector(out, descendant)
+            self.whitespace()
+        return out
+
+    def parse(self):
+        rules: list[CssRule] = []
+        while self.i < len(self.s):
+            try:
+                self.whitespace()
+                selector = self.selector()
+                self.literal("{")
+                self.whitespace()
+                body = self.body()
+                self.literal("}")
+                rules.append((selector, body))
+            except Exception:
+                why = self.ignore_until(["}"])
+                if why == "}":
+                    self.literal("}")
+                    self.whitespace()
+                else:
+                    break
+        return rules
+
+
+class TagSelector:
+    def __init__(self, tag: str):
+        self.tag = tag
+        self.priority = 1
+
+    def __repr__(self) -> str:
+        return self.tag
+
+    def matches(self, node: Node):
+        return isinstance(node, Element) and self.tag == node.tag
+
+
+class DescendantSelector:
+    def __init__(self, ancestor: TagSelector | DescendantSelector, descendant: TagSelector):
+        self.ancestor = ancestor  # 先祖
+        self.descendant = descendant  # 子孫
+        self.priority = ancestor.priority + descendant.priority
+
+    def __repr__(self) -> str:
+        return f"{self.ancestor} {self.descendant}"
+
+    def matches(self, node: Node) -> bool:
+        # `p a` の a か？
+        if not self.descendant.matches(node):
+            return False
+
+        while node.parent:
+            # root まで親を辿り、一致する先祖を探す
+            if self.ancestor.matches(node.parent):
+                return True
+            node = node.parent
+
+        return False
+
+
 FONTS: dict[
     tuple[int, Literal["normal", "bold"], str], tuple[tkinter.font.Font, tkinter.Label]
 ] = {}
@@ -281,6 +436,58 @@ def get_font(
         label = tkinter.Label(font=font)
         FONTS[key] = (font, label)
     return FONTS[key][0]
+
+
+DEFAULT_STYLE_SHEET = CSSParser(open("browser/browser.css").read()).parse()
+INHERITED_PROPERTIES = {
+    "font-size": "16px",
+    "font-style": "normal",
+    "font-weight": "normal",
+    "color": "black",
+}
+
+
+def style(node: Node, rules: list[CssRule]):
+    node.style = {}
+
+    # 継承されるスタイルを適用。
+    for prop, default_val in INHERITED_PROPERTIES.items():
+        if node.parent and node.parent.style and prop in node.parent.style:
+            node.style[prop] = node.parent.style[prop]
+        else:
+            node.style[prop] = default_val
+
+    # スタイルシートをWebページに適用。
+    for selector, body in rules:
+        if not selector.matches(node):
+            continue
+        for prop, val in body.items():
+            node.style[prop] = val
+
+    # style属性をパースしWebページに適用。
+    # スタイルシートで定義されたスタイルは上書き。
+    if isinstance(node, Element) and "style" in node.attributes:
+        pairs = CSSParser(node.attributes["style"]).body()
+        for property, value in pairs.items():
+            node.style[property] = value
+
+    # %指定のフォントサイズは、親のフォントサイズから算出
+    if node.style["font-size"].endswith("%"):
+        if node.parent and node.parent.style and "font-size" in node.parent.style:
+            parent_font_size = node.parent.style["font-size"]
+        else:
+            parent_font_size = INHERITED_PROPERTIES["font-size"]
+        parent_px = float(parent_font_size[:-2])
+        node_pct = float(node.style["font-size"][:-1]) / 100
+        node.style["font-size"] = str(node_pct * parent_px) + "px"
+
+    for child in node.children:
+        style(child, rules)
+
+
+def cascade_priority(rule: CssRule):
+    selector, _ = rule
+    return selector.priority
 
 
 WIDTH, HEIGHT = 800, 600
@@ -356,7 +563,7 @@ class DocumentLayout:
 class BlockLayout:
     def __init__(
         self,
-        node: Element | Text,
+        node: Node,
         parent: BlockLayout | DocumentLayout,
         previous: BlockLayout | None,
     ) -> None:
@@ -409,7 +616,7 @@ class BlockLayout:
             self.style: Literal["roman", "italic"] = "roman"
             self.size = 12
 
-            self.line: list[tuple[int, str, tkinter.font.Font]] = []
+            self.line: list[tuple[int, str, tkinter.font.Font, str]] = []
             self.recurse(self.node)
             self.flush()
         for child in self.children:
@@ -419,40 +626,15 @@ class BlockLayout:
         else:
             self.height = self.cursor_y
 
-    def recurse(self, tree: Element | Text):
-        if isinstance(tree, Text):
-            for word in tree.text.split():
-                self.word(word)
+    def recurse(self, node: Node):
+        if isinstance(node, Text):
+            for word in node.text.split():
+                self.word(node, word)
         else:
-            self.opne_tag(tree.tag)
-            for child in tree.children:
+            if node.tag == "br":
+                self.flush()
+            for child in node.children:
                 self.recurse(child)
-            self.close_tag(tree.tag)
-
-    def opne_tag(self, tag: str):
-        if tag == "i":
-            self.style = "italic"
-        elif tag == "b":
-            self.weight = "bold"
-        elif tag == "small":
-            self.size -= 2
-        elif tag == "big":
-            self.size += 4
-        elif tag == "br":
-            self.flush()
-
-    def close_tag(self, tag: str):
-        if tag == "i":
-            self.style = "roman"
-        elif tag == "b":
-            self.weight = "normal"
-        elif tag == "small":
-            self.size += 2
-        elif tag == "big":
-            self.size -= 4
-        elif tag == "p":
-            self.flush()
-            self.cursor_y += VSTEP
 
     # def token(self, tok: Text | Element):
     #     if isinstance(tok, Text):
@@ -475,14 +657,26 @@ class BlockLayout:
     #         self.in_pre = False
     #         self.flush()
 
-    def word(self, word: str):
-        font = get_font(self.size, self.weight, self.style)
+    def word(self, node: Text, word: str):
+        color = node.style["color"]
+        weight = node.style["font-weight"]
+        if weight not in ("normal", "bold"):
+            raise ValueError(f"invalid font-weight: {weight}")
+
+        style = node.style["font-style"]
+        if style == "normal":
+            style = "roman"
+        if style not in ("roman", "italic"):
+            raise ValueError(f"invalid font-style: {style}")
+
+        size = int(float(node.style["font-size"][:-2]) * 0.75)
+        font = get_font(size, weight, style)
         w = font.measure(word)
 
         if self.cursor_x + w > self.width:
             self.flush()
 
-        self.line.append((self.cursor_x, word, font))
+        self.line.append((self.cursor_x, word, font, color))
         self.cursor_x += w + font.measure(" ")
 
     def flush(self):
@@ -490,15 +684,15 @@ class BlockLayout:
             return
 
         # 各単語をベースラインに配置し、ディスプレイリストに追加
-        max_ascent = max([font.metrics("ascent") for _, _, font in self.line])
+        max_ascent = max([font.metrics("ascent") for _, _, font, _ in self.line])
         baseline = int(self.cursor_y + 1.25 * max_ascent)
-        for rel_x, word, font in self.line:
+        for rel_x, word, font, color in self.line:
             x = self.x + rel_x
             y = self.y + baseline - font.metrics("ascent")
-            self.display_list.append((x, y, word, font))
+            self.display_list.append((x, y, word, font, color))
 
         # 次の行のy座標を更新
-        metrics = [font.metrics() for _, _, font in self.line]
+        metrics = [font.metrics() for _, _, font, _ in self.line]
         max_descent = max([metric["descent"] for metric in metrics])
         self.cursor_y = int(baseline + 1.25 * max_descent)
 
@@ -507,27 +701,37 @@ class BlockLayout:
 
     def paint(self):
         cmds: list[DrawItem] = []
-        if isinstance(self.node, Element) and self.node.tag == "pre":
-            x2, y2 = self.x + self.width, self.y + self.height
-            rect = DrawRect(self.x, self.y, x2, y2, "gray")
-            cmds.append(rect)
+
+        if self.node.style:
+            bgcolor = self.node.style.get("background-color", "transparent")
+            if bgcolor != "transparent":
+                x2, y2 = self.x + self.width, self.y + self.height
+                rect = DrawRect(self.x, self.y, x2, y2, bgcolor)
+                cmds.append(rect)
+
         if self.layout_mode() == "inline":
-            for x, y, word, font in self.display_list:
-                cmds.append(DrawText(x, y, word, font))
+            for x, y, word, font, color in self.display_list:
+                cmds.append(DrawText(x, y, word, font, color))
         return cmds
 
 
 class DrawText:
-    def __init__(self, x1: int, y1: int, text: str, font: tkinter.font.Font):
+    def __init__(self, x1: int, y1: int, text: str, font: tkinter.font.Font, color: str):
         self.top = y1
         self.left = x1
         self.text = text
         self.font = font
         self.bottom = y1 + font.metrics("linespace")
+        self.color = color
 
     def execute(self, scroll: int, canvas: tkinter.Canvas):
         canvas.create_text(
-            self.left, self.top - scroll, text=self.text, font=self.font, anchor="nw"
+            self.left,
+            self.top - scroll,
+            text=self.text,
+            font=self.font,
+            anchor="nw",
+            fill=self.color,
         )
 
 
@@ -570,6 +774,7 @@ class Browser:
             self.window,
             width=self.width,
             height=self.height,
+            bg="white",
         )
         self.canvas.pack(
             fill=tkinter.BOTH,  # BOTH: 水平方向と垂直方向に拡張、 X: 水平方向のみ、 Y: 垂直方向のみ
@@ -596,6 +801,25 @@ class Browser:
         self.nodes = HTMLParser(body).parse()
         if self.html_tree:
             print_html_tree(self.nodes)
+
+        css_rules = DEFAULT_STYLE_SHEET.copy()
+        links = [
+            node.attributes["href"]
+            for node in tree_to_list(self.nodes, [])
+            if isinstance(node, Element)
+            and node.tag == "link"
+            and node.attributes.get("rel") == "stylesheet"
+            and "href" in node.attributes
+        ]
+        for link in links:
+            style_url = url.resolve(link)
+            logging.info(f"css found. [{style_url}]")
+            try:
+                body = style_url.request()
+            except Exception:
+                continue
+            css_rules.extend(CSSParser(body).parse())
+        style(self.nodes, sorted(css_rules, key=cascade_priority))
 
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
