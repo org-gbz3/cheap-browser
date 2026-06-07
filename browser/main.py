@@ -6,7 +6,6 @@ import socket
 import ssl
 import tkinter
 import tkinter.font
-from ctypes.wintypes import BOOL
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -764,7 +763,7 @@ SCROLL_STEP = 100
 
 
 class Browser:
-    def __init__(self, html_tree: BOOL, layout_tree: BOOL) -> None:
+    def __init__(self, html_tree: bool, layout_tree: bool) -> None:
         self.html_tree = html_tree
         self.layout_tree = layout_tree
         self.width = WIDTH
