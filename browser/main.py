@@ -147,10 +147,17 @@ def print_layout_tree(node: Layout, indent: int = 0):
         print_layout_tree(child, indent + 2)
 
 
-def tree_to_list(tree: Node, list: list[Node]):
+def node_tree_to_list(tree: Node, list: list[Node]):
     list.append(tree)
     for child in tree.children:
-        tree_to_list(child, list)
+        node_tree_to_list(child, list)
+    return list
+
+
+def layout_tree_to_list(tree: Layout, list: list[Layout]):
+    list.append(tree)
+    for child in tree.children:
+        layout_tree_to_list(child, list)
     return list
 
 
@@ -841,6 +848,8 @@ class Browser:
         self.window.bind("<Up>", self.scrollup)
         self.window.bind("<Button-4>", self.scrollup)
         # self.window.bind("<Configure>", self.window_resize)
+        self.window.bind("<Button-1>", self.click)
+        self.url: URL
 
     def draw(self):
         self.canvas.delete("all")
@@ -852,6 +861,7 @@ class Browser:
             cmd.execute(self.scroll, self.canvas)
 
     def load(self, url: URL):
+        self.url = url
         body = url.request()
         self.nodes = HTMLParser(body).parse()
         if self.html_tree:
@@ -860,7 +870,7 @@ class Browser:
         css_rules = DEFAULT_STYLE_SHEET.copy()
         links = [
             node.attributes["href"]
-            for node in tree_to_list(self.nodes, [])
+            for node in node_tree_to_list(self.nodes, [])
             if isinstance(node, Element)
             and node.tag == "link"
             and node.attributes.get("rel") == "stylesheet"
@@ -903,6 +913,29 @@ class Browser:
     #         self.height = e.height
     #         self.document.layout()
     #         self.draw()
+
+    def click(self, e: tkinter.Event):
+        x, y = e.x, e.y
+        y += self.scroll
+        objs = [
+            obj
+            for obj in layout_tree_to_list(self.document, [])
+            if obj.x <= x < obj.x + obj.width and obj.y <= y < obj.y + obj.height
+        ]
+        if not objs:
+            return
+
+        # 最後（一番手前）の要素をクリックしたと想定
+        elt = objs[-1].node
+
+        # ルートに向かってリンク要素を探す
+        while elt:
+            if isinstance(elt, Text):
+                pass
+            elif elt.tag == "a" and "href" in elt.attributes:
+                url = self.url.resolve(elt.attributes["href"])
+                return self.load(url)
+            elt = elt.parent
 
 
 def parse_args() -> argparse.Namespace:
