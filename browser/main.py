@@ -14,6 +14,7 @@ type DisplayItem = tuple[int, int, str, tkinter.font.Font, str]
 type DrawItem = DrawText | DrawRect
 type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
 type Node = Element | Text
+type Layout = DocumentLayout | BlockLayout | LineLayout | TextLayout
 
 
 # JST タイムゾーンの設定
@@ -30,7 +31,8 @@ logging.basicConfig(
 
 
 class URL:
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, skip_ssl_verify: bool) -> None:
+        self.skip_ssl_verify = skip_ssl_verify
         self.scheme, url = url.split("://", 1)
         assert self.scheme in ["http", "https"]
 
@@ -57,6 +59,9 @@ class URL:
 
         if self.scheme == "https":
             ctx = ssl.create_default_context()
+            if self.skip_ssl_verify:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
             s = ctx.wrap_socket(s, server_hostname=self.host)
 
@@ -88,7 +93,7 @@ class URL:
 
     def resolve(self, url: str):
         if "://" in url:
-            return URL(url)
+            return URL(url, self.skip_ssl_verify)
         if not url.startswith("/"):
             dir, _ = self.path.rsplit("/", 1)
             while url.startswith("../"):
@@ -97,9 +102,11 @@ class URL:
                     dir, _ = dir.rsplit("/", 1)
             url = dir + "/" + url
         if url.startswith("//"):
-            return URL(self.scheme + ":" + url)
+            return URL(self.scheme + ":" + url, self.skip_ssl_verify)
         else:
-            return URL(self.scheme + "://" + self.host + ":" + str(self.port) + url)
+            return URL(
+                self.scheme + "://" + self.host + ":" + str(self.port) + url, self.skip_ssl_verify
+            )
 
     def __repr__(self) -> str:
         return f"{self.scheme}://{self.host}:{self.port}{self.path}"
@@ -134,7 +141,7 @@ def print_html_tree(node: Node, indent: int = 0):
         print_html_tree(child, indent + 2)
 
 
-def print_layout_tree(node: DocumentLayout | BlockLayout, indent: int = 0):
+def print_layout_tree(node: Layout, indent: int = 0):
     print(" " * indent, node)
     for child in node.children:
         print_layout_tree(child, indent + 2)
@@ -569,12 +576,12 @@ class BlockLayout:
         self.node = node
         self.parent = parent
         self.previous = previous
-        self.children: list[BlockLayout] = []
+        self.children: list[BlockLayout | LineLayout] = []
         self.display_list: list[DisplayItem] = []
         self.x = 0
-        self.y = 0
+        self.y: int = 0
         self.width = 0
-        self.height = 0
+        self.height: int = 0
 
     def __repr__(self) -> str:
         return repr(self.node) + f" >> display_list={self.display_list}"
@@ -609,29 +616,22 @@ class BlockLayout:
                 self.children.append(next)
                 previous = next
         else:
-            self.cursor_x = 0
-            self.cursor_y = 0
             self.weight: Literal["normal", "bold"] = "normal"
             self.style: Literal["roman", "italic"] = "roman"
             self.size = 12
 
-            self.line: list[tuple[int, str, tkinter.font.Font, str]] = []
+            self.new_line()
             self.recurse(self.node)
-            self.flush()
+
         for child in self.children:
             child.layout()
-        if mode == "block":
-            self.height = sum([child.height for child in self.children])
-        else:
-            self.height = self.cursor_y
+        self.height = sum([child.height for child in self.children])
 
     def recurse(self, node: Node):
         if isinstance(node, Text):
             for word in node.text.split():
                 self.word(node, word)
         else:
-            if node.tag == "br":
-                self.flush()
             for child in node.children:
                 self.recurse(child)
 
@@ -657,7 +657,6 @@ class BlockLayout:
     #         self.flush()
 
     def word(self, node: Text, word: str):
-        color = node.style["color"]
         weight = node.style["font-weight"]
         if weight not in ("normal", "bold"):
             raise ValueError(f"invalid font-weight: {weight}")
@@ -673,30 +672,24 @@ class BlockLayout:
         w = font.measure(word)
 
         if self.cursor_x + w > self.width:
-            self.flush()
+            self.new_line()
 
-        self.line.append((self.cursor_x, word, font, color))
+        assert isinstance(self.children[-1], LineLayout)
+        line = self.children[-1]
+        previous_word = line.children[-1] if line.children else None
+        text = TextLayout(node, word, line, previous_word)
+        line.children.append(text)
         self.cursor_x += w + font.measure(" ")
 
-    def flush(self):
-        if not self.line:
-            return
-
-        # 各単語をベースラインに配置し、ディスプレイリストに追加
-        max_ascent = max([font.metrics("ascent") for _, _, font, _ in self.line])
-        baseline = int(self.cursor_y + 1.25 * max_ascent)
-        for rel_x, word, font, color in self.line:
-            x = self.x + rel_x
-            y = self.y + baseline - font.metrics("ascent")
-            self.display_list.append((x, y, word, font, color))
-
-        # 次の行のy座標を更新
-        metrics = [font.metrics() for _, _, font, _ in self.line]
-        max_descent = max([metric["descent"] for metric in metrics])
-        self.cursor_y = int(baseline + 1.25 * max_descent)
-
+    def new_line(self):
         self.cursor_x = 0
-        self.line = []
+        last_line = (
+            self.children[-1]
+            if self.children and isinstance(self.children[-1], LineLayout)
+            else None
+        )
+        new_line = LineLayout(self.node, self, last_line)
+        self.children.append(new_line)
 
     def paint(self):
         cmds: list[DrawItem] = []
@@ -708,10 +701,73 @@ class BlockLayout:
                 rect = DrawRect(self.x, self.y, x2, y2, bgcolor)
                 cmds.append(rect)
 
-        if self.layout_mode() == "inline":
-            for x, y, word, font, color in self.display_list:
-                cmds.append(DrawText(x, y, word, font, color))
         return cmds
+
+
+class LineLayout:
+    def __init__(self, node: Node, parent: BlockLayout, previous: LineLayout | None):
+        self.node = node
+        self.parent = parent
+        self.previous = previous
+        self.children: list[TextLayout] = []
+
+    def layout(self):
+        self.width = self.parent.width
+        self.x = self.parent.x
+        if self.previous:
+            self.y = self.previous.y + self.previous.height
+        else:
+            self.y = self.parent.y
+
+        for word in self.children:
+            word.layout()
+
+        max_ascent = max([word.font.metrics("ascent") for word in self.children])
+        baseline = int(self.y + 1.25 * max_ascent)
+        for word in self.children:
+            word.y = baseline - word.font.metrics("ascent")
+        max_descent = max([word.font.metrics("descent") for word in self.children])
+        self.height = int(1.25 * (max_ascent + max_descent))
+
+    def paint(self) -> list[DrawText]:
+        return []
+
+
+class TextLayout:
+    def __init__(self, node: Text, word: str, parent: LineLayout, previous: TextLayout | None):
+        self.node = node
+        self.word = word
+        self.children = []
+        self.parent = parent
+        self.previous = previous
+        self.y = 0
+
+    def layout(self):
+        weight = self.node.style["font-weight"]
+        if weight not in ("normal", "bold"):
+            raise ValueError(f"invalid font-style: {weight}")
+
+        style = self.node.style["font-style"]
+        if style == "normal":
+            style = "roman"
+        if style not in ("roman", "italic"):
+            raise ValueError(f"invalid font-style: {style}")
+
+        size = int(float(self.node.style["font-size"][:-2]) * 0.75)
+        self.font = get_font(size, weight, style)
+
+        self.width = self.font.measure(self.word)
+        if self.previous:
+            space = self.previous.font.measure(" ")
+            self.x = self.previous.x + self.previous.width + space
+        else:
+            self.x = self.parent.x
+
+        self.height = self.font.metrics("linespace")
+
+    def paint(self):
+        color = self.node.style["color"]
+        return [DrawText(self.x, self.y, self.word, self.font, color)]
 
 
 class DrawText:
@@ -753,7 +809,7 @@ class DrawRect:
         )
 
 
-def paint_tree(layout_object: DocumentLayout | BlockLayout, display_list: list[DrawItem]):
+def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
     display_list.extend(layout_object.paint())
     for child in layout_object.children:
         paint_tree(child, display_list)
@@ -865,6 +921,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="レイアウトツリーを出力",
     )
+    parser.add_argument(
+        "--skip-ssl-verify",
+        action="store_true",
+        help="証明書の検証をスキップ",
+    )
     return parser.parse_args()
 
 
@@ -874,5 +935,5 @@ if __name__ == "__main__":
         args.html_tree,
         args.layout_tree,
     )
-    browser.load(URL(args.url))
+    browser.load(URL(args.url, args.skip_ssl_verify))
     tkinter.mainloop()
