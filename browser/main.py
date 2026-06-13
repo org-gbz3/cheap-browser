@@ -825,40 +825,21 @@ def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
 SCROLL_STEP = 100
 
 
-class Browser:
+class Tab:
     def __init__(self, html_tree: bool, layout_tree: bool) -> None:
         self.html_tree = html_tree
         self.layout_tree = layout_tree
         self.width = WIDTH
         self.height = HEIGHT
-        self.window = tkinter.Tk()
-        self.canvas = tkinter.Canvas(
-            self.window,
-            width=self.width,
-            height=self.height,
-            bg="white",
-        )
-        self.canvas.pack(
-            fill=tkinter.BOTH,  # BOTH: 水平方向と垂直方向に拡張、 X: 水平方向のみ、 Y: 垂直方向のみ
-            expand=True,  # 余剰スペースを割り当てる？
-        )
         self.scroll = 0
-        self.window.bind("<Down>", self.scrolldown)
-        self.window.bind("<Button-5>", self.scrolldown)
-        self.window.bind("<Up>", self.scrollup)
-        self.window.bind("<Button-4>", self.scrollup)
-        # self.window.bind("<Configure>", self.window_resize)
-        self.window.bind("<Button-1>", self.click)
-        self.url: URL
 
-    def draw(self):
-        self.canvas.delete("all")
+    def draw(self, canvas: tkinter.Canvas):
         for cmd in self.display_list:
             if cmd.top > self.scroll + self.height:
                 continue
             if cmd.bottom < self.scroll:
                 continue
-            cmd.execute(self.scroll, self.canvas)
+            cmd.execute(self.scroll, canvas)
 
     def load(self, url: URL):
         self.url = url
@@ -893,18 +874,15 @@ class Browser:
 
         self.display_list: list[DrawItem] = []
         paint_tree(self.document, self.display_list)
-        self.draw()
 
-    def scrolldown(self, e: tkinter.Event):
+    def scrolldown(self):
         max_y = max(self.document.height + 2 * VSTEP - HEIGHT, 0)
         self.scroll = min(self.scroll + SCROLL_STEP, max_y)
         logging.info(f"scroll={self.scroll}")
-        self.draw()
 
-    def scrollup(self, e: tkinter.Event):
+    def scrollup(self):
         self.scroll -= min(SCROLL_STEP, self.scroll)
         logging.info(f"scroll={self.scroll}")
-        self.draw()
 
     # def window_resize(self, e: tkinter.Event):
     #     logging.info(f"window resize: {e}")
@@ -914,8 +892,7 @@ class Browser:
     #         self.document.layout()
     #         self.draw()
 
-    def click(self, e: tkinter.Event):
-        x, y = e.x, e.y
+    def click(self, x: int, y: int):
         y += self.scroll
         objs = [
             obj
@@ -936,6 +913,53 @@ class Browser:
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
             elt = elt.parent
+
+
+class Browser:
+    def __init__(self):
+        self.tabs: list[Tab] = []
+        self.active_tab: Tab
+        self.window = tkinter.Tk()
+        self.canvas = tkinter.Canvas(
+            self.window,
+            width=WIDTH,
+            height=HEIGHT,
+            bg="white",
+        )
+        self.canvas.pack(
+            fill=tkinter.BOTH,  # BOTH: 水平方向と垂直方向に拡張、 X: 水平方向のみ、 Y: 垂直方向のみ
+            expand=True,  # 余剰スペースを割り当てる？
+        )
+        self.window.bind("<Down>", self.handle_down)
+        self.window.bind("<Button-5>", self.handle_down)
+        self.window.bind("<Up>", self.handle_up)
+        self.window.bind("<Button-4>", self.handle_up)
+        # self.window.bind("<Configure>", self.window_resize)
+        self.window.bind("<Button-1>", self.handle_click)
+        self.url: URL
+
+    def handle_down(self, e: tkinter.Event):
+        self.active_tab.scrolldown()
+        self.draw()
+
+    def handle_up(self, e: tkinter.Event):
+        self.active_tab.scrollup()
+        self.draw()
+
+    def handle_click(self, e: tkinter.Event):
+        self.active_tab.click(e.x, e.y)
+        self.draw()
+
+    def draw(self):
+        self.canvas.delete("all")
+        self.active_tab.draw(self.canvas)
+
+    def new_tab(self, url: URL, html_tree: bool, layout_tree: bool):
+        new_tab = Tab(html_tree, layout_tree)
+        new_tab.load(url)
+        self.active_tab = new_tab
+        self.tabs.append(new_tab)
+        self.draw()
 
 
 def parse_args() -> argparse.Namespace:
@@ -964,9 +988,9 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    browser = Browser(
+    Browser().new_tab(
+        URL(args.url, args.skip_ssl_verify),
         args.html_tree,
         args.layout_tree,
     )
-    browser.load(URL(args.url, args.skip_ssl_verify))
     tkinter.mainloop()
