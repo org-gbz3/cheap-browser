@@ -10,6 +10,8 @@ from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+import dukpy
+
 type DisplayItem = tuple[int, int, str, tkinter.font.Font, str]
 type DrawItem = DrawText | DrawRect | DrawOutline | DrawLine
 type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
@@ -111,7 +113,7 @@ class URL:
 
     def __repr__(self) -> str:
         return f"{self.scheme}://{self.host}:{self.port}{self.path}"
-    
+
     def __str__(self):
         port_part = ":" + str(self.port)
         if self.scheme == "https" and self.port == 443:
@@ -906,6 +908,19 @@ class Tab:
         if self.html_tree:
             print_html_tree(self.nodes)
 
+        scripts = [
+            node.attributes["src"]
+            for node in node_tree_to_list(self.nodes, [])
+            if isinstance(node, Element) and node.tag == "script" and "src" in node.attributes
+        ]
+        for script in scripts:
+            script_url = url.resolve(script)
+            try:
+                body = script_url.request()
+            except Exception:
+                continue
+            print(f"Script returned: {dukpy.evaljs(body)}")  # type: ignore[attr-defined]
+
         css_rules = DEFAULT_STYLE_SHEET.copy()
         links = [
             node.attributes["href"]
@@ -1042,11 +1057,7 @@ class Chrome:
         cmds.append(DrawOutline(self.back_rect, "black", 1))
         cmds.append(
             DrawText(
-                self.back_rect.left + self.padding,
-                self.back_rect.top,
-                "<",
-                self.font,
-                "black"
+                self.back_rect.left + self.padding, self.back_rect.top, "<", self.font, "black"
             )
         )
         cmds.append(DrawOutline(self.address_rect, "black", 1))
@@ -1120,6 +1131,7 @@ class Chrome:
             self.browser.active_tab.load(URL(self.address_bar, self.browser.skip_ssl_verify))
             self.focus = None
 
+
 class Browser:
     def __init__(self, html_tree: bool, layout_tree: bool, skip_ssl_verify: bool):
         self.tabs: list[Tab] = []
@@ -1168,7 +1180,7 @@ class Browser:
     def handle_key(self, e: tkinter.Event):
         if len(e.char) == 0:
             return
-        if not (0x20 <= ord(e.char) < 0x7f):
+        if not (0x20 <= ord(e.char) < 0x7F):
             return
         self.chrome.keypress(e.char)
         self.draw()
@@ -1228,3 +1240,5 @@ if __name__ == "__main__":
         browser.layout_tree,
     )
     tkinter.mainloop()
+
+# ローカルHTTPサーバ起動$ python -m http.server --directory www
