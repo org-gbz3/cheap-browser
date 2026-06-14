@@ -15,6 +15,7 @@ type DrawItem = DrawText | DrawRect | DrawOutline | DrawLine
 type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
 type Node = Element | Text
 type Layout = DocumentLayout | BlockLayout | LineLayout | TextLayout
+type Focusable = Literal["address bar"] | None
 
 
 # JST タイムゾーンの設定
@@ -1011,6 +1012,8 @@ class Chrome:
             WIDTH - self.padding,
             self.urlbar_bottom - self.padding,
         )
+        self.focus: Focusable = None
+        self.address_bar = ""
 
     def tab_rect(self, i: int):
         tabs_start = self.newtab_rect.right + self.padding
@@ -1047,16 +1050,6 @@ class Chrome:
             )
         )
         cmds.append(DrawOutline(self.address_rect, "black", 1))
-        url = str(self.browser.active_tab.url)
-        cmds.append(
-            DrawText(
-                self.address_rect.left + self.padding,
-                self.address_rect.top,
-                url,
-                self.font,
-                "black",
-            )
-        )
         for i, tab in enumerate(self.browser.tabs):
             bounds = self.tab_rect(i)
             cmds.append(DrawLine(bounds.left, 0, bounds.left, bounds.bottom, "black", 1))
@@ -1073,14 +1066,59 @@ class Chrome:
             if tab == self.browser.active_tab:
                 cmds.append(DrawLine(0, bounds.bottom, bounds.left, bounds.bottom, "black", 1))
                 cmds.append(DrawLine(bounds.right, bounds.bottom, WIDTH, bounds.bottom, "black", 1))
+        if self.focus == "address bar":
+            cmds.append(
+                DrawText(
+                    self.address_rect.left + self.padding,
+                    self.address_rect.top,
+                    self.address_bar,
+                    self.font,
+                    "black",
+                )
+            )
+            w = self.font.measure(self.address_bar)
+            cmds.append(
+                DrawLine(
+                    self.address_rect.left + self.padding + w,
+                    self.address_rect.top,
+                    self.address_rect.left + self.padding + w,
+                    self.address_rect.bottom,
+                    "red",
+                    1,
+                )
+            )
+        else:
+            url = str(self.browser.active_tab.url)
+            cmds.append(
+                DrawText(
+                    self.address_rect.left + self.padding,
+                    self.address_rect.top,
+                    url,
+                    self.font,
+                    "black",
+                )
+            )
         return cmds
 
     def click(self, x: int, y: int):
+        self.focus = None
         if self.newtab_rect.containsPoint(x, y):
             default_url = URL("https://browser.engineering/", self.browser.skip_ssl_verify)
             self.browser.new_tab(default_url, self.browser.html_tree, self.browser.layout_tree)
         elif self.back_rect.containsPoint(x, y):
             self.browser.active_tab.go_back()
+        elif self.address_rect.containsPoint(x, y):
+            self.focus = "address bar"
+            self.address_bar = ""
+
+    def keypress(self, char: str):
+        if self.focus == "address bar":
+            self.address_bar += char
+
+    def enter(self):
+        if self.focus == "address bar":
+            self.browser.active_tab.load(URL(self.address_bar, self.browser.skip_ssl_verify))
+            self.focus = None
 
 class Browser:
     def __init__(self, html_tree: bool, layout_tree: bool, skip_ssl_verify: bool):
@@ -1103,6 +1141,8 @@ class Browser:
         self.window.bind("<Button-4>", self.handle_up)
         # self.window.bind("<Configure>", self.window_resize)
         self.window.bind("<Button-1>", self.handle_click)
+        self.window.bind("<Key>", self.handle_key)
+        self.window.bind("<Return>", self.handle_enter)
         self.url: URL
         self.chrome = Chrome(self)
         self.html_tree = html_tree
@@ -1123,6 +1163,18 @@ class Browser:
         else:
             tab_y = e.y - self.chrome.bottom
             self.active_tab.click(e.x, tab_y)
+        self.draw()
+
+    def handle_key(self, e: tkinter.Event):
+        if len(e.char) == 0:
+            return
+        if not (0x20 <= ord(e.char) < 0x7f):
+            return
+        self.chrome.keypress(e.char)
+        self.draw()
+
+    def handle_enter(self, e: tkinter.Event):
+        self.chrome.enter()
         self.draw()
 
     def draw(self):
