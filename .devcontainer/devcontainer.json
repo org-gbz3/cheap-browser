@@ -36,5 +36,8 @@
       ]
     }
   },
+  "remoteEnv": {
+    "NODE_EXTRA_CA_CERTS": "/etc/ssl/certs/ca-certificates.crt"
+  },
   "postCreateCommand": "python -m venv .venv && ./.venv/bin/python -m pip install --upgrade pip && ./.venv/bin/python -m pip install --requirement requirements-dev.txt"
 }
