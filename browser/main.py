@@ -11,7 +11,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 type DisplayItem = tuple[int, int, str, tkinter.font.Font, str]
-type DrawItem = DrawText | DrawRect
+type DrawItem = DrawText | DrawRect | DrawOutline | DrawLine
 type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
 type Node = Element | Text
 type Layout = DocumentLayout | BlockLayout | LineLayout | TextLayout
@@ -505,6 +505,19 @@ def cascade_priority(rule: CssRule):
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
+
+
+class Rect:
+    def __init__(self, left: int, top: int, right: int, bottom: int):
+        self.left = left
+        self.top = top
+        self.right = right
+        self.bottom = bottom
+
+    def containsPoint(self, x: int, y: int):
+        return self.left <= x < self.right and self.top <= y < self.bottom
+
+
 BLOCK_ELEMENTS = [
     "html",
     "body",
@@ -698,14 +711,16 @@ class BlockLayout:
         new_line = LineLayout(self.node, self, last_line)
         self.children.append(new_line)
 
+    def self_rect(self):
+        return Rect(self.x, self.y, self.x + self.width, self.y + self.height)
+
     def paint(self):
         cmds: list[DrawItem] = []
 
         if self.node.style:
             bgcolor = self.node.style.get("background-color", "transparent")
             if bgcolor != "transparent":
-                x2, y2 = self.x + self.width, self.y + self.height
-                rect = DrawRect(self.x, self.y, x2, y2, bgcolor)
+                rect = DrawRect(self.self_rect(), bgcolor)
                 cmds.append(rect)
 
         return cmds
@@ -779,17 +794,15 @@ class TextLayout:
 
 class DrawText:
     def __init__(self, x1: int, y1: int, text: str, font: tkinter.font.Font, color: str):
-        self.top = y1
-        self.left = x1
         self.text = text
         self.font = font
-        self.bottom = y1 + font.metrics("linespace")
+        self.rect = Rect(x1, y1, x1 + font.measure(text), y1 + font.metrics("linespace"))
         self.color = color
 
     def execute(self, scroll: int, canvas: tkinter.Canvas):
         canvas.create_text(
-            self.left,
-            self.top - scroll,
+            self.rect.left,
+            self.rect.top - scroll,
             text=self.text,
             font=self.font,
             anchor="nw",
@@ -798,21 +811,52 @@ class DrawText:
 
 
 class DrawRect:
-    def __init__(self, x1: int, y1: int, x2: int, y2: int, color: str):
-        self.top = y1
-        self.left = x1
-        self.bottom = y2
-        self.right = x2
+    def __init__(self, rect: Rect, color: str):
         self.color = color
+        self.rect = rect
 
     def execute(self, scroll: int, canvas: tkinter.Canvas):
         canvas.create_rectangle(
-            self.left,
-            self.top - scroll,
-            self.right,
-            self.bottom - scroll,
+            self.rect.left,
+            self.rect.top - scroll,
+            self.rect.right,
+            self.rect.bottom - scroll,
             width=0,
             fill=self.color,
+        )
+
+
+class DrawOutline:
+    def __init__(self, rect: Rect, color: str, thickness: float):
+        self.rect = rect
+        self.color = color
+        self.thickness = thickness
+
+    def execute(self, scroll: int, canvas: tkinter.Canvas):
+        canvas.create_rectangle(
+            self.rect.left,
+            self.rect.top - scroll,
+            self.rect.right,
+            self.rect.bottom - scroll,
+            width=self.thickness,
+            outline=self.color,
+        )
+
+
+class DrawLine:
+    def __init__(self, x1: int, y1: int, x2: int, y2: int, color: str, thickness: float):
+        self.rect = Rect(x1, y1, x2, y2)
+        self.color = color
+        self.thickness = thickness
+
+    def execute(self, scroll: int, canvas: tkinter.Canvas):
+        canvas.create_line(
+            self.rect.left,
+            self.rect.top - scroll,
+            self.rect.right,
+            self.rect.bottom - scroll,
+            fill=self.color,
+            width=self.thickness,
         )
 
 
@@ -826,20 +870,21 @@ SCROLL_STEP = 100
 
 
 class Tab:
-    def __init__(self, html_tree: bool, layout_tree: bool) -> None:
+    def __init__(self, tab_height: int, html_tree: bool, layout_tree: bool) -> None:
         self.html_tree = html_tree
         self.layout_tree = layout_tree
         self.width = WIDTH
         self.height = HEIGHT
         self.scroll = 0
+        self.tab_height = tab_height
 
-    def draw(self, canvas: tkinter.Canvas):
+    def draw(self, canvas: tkinter.Canvas, offset: int):
         for cmd in self.display_list:
-            if cmd.top > self.scroll + self.height:
+            if cmd.rect.top > self.scroll + self.tab_height:
                 continue
-            if cmd.bottom < self.scroll:
+            if cmd.rect.bottom < self.scroll:
                 continue
-            cmd.execute(self.scroll, canvas)
+            cmd.execute(self.scroll - offset, canvas)
 
     def load(self, url: URL):
         self.url = url
@@ -876,7 +921,7 @@ class Tab:
         paint_tree(self.document, self.display_list)
 
     def scrolldown(self):
-        max_y = max(self.document.height + 2 * VSTEP - HEIGHT, 0)
+        max_y = max(self.document.height + 2 * VSTEP - self.tab_height, 0)
         self.scroll = min(self.scroll + SCROLL_STEP, max_y)
         logging.info(f"scroll={self.scroll}")
 
@@ -915,8 +960,72 @@ class Tab:
             elt = elt.parent
 
 
+class Chrome:
+    def __init__(self, browser: Browser):
+        self.browser = browser
+        self.font = get_font(20, "normal", "roman")
+        self.font_height = self.font.metrics("linespace")
+        self.padding = 5
+        self.tabbar_top = 0
+        self.tabbar_bottom = self.font_height + 2 * self.padding
+        plus_width = self.font.measure("+") + 2 * self.padding
+        self.newtab_rect = Rect(
+            self.padding,
+            self.padding,
+            self.padding + plus_width,
+            self.padding + self.font_height,
+        )
+        self.bottom = self.tabbar_bottom
+
+    def tab_rect(self, i: int):
+        tabs_start = self.newtab_rect.right + self.padding
+        tab_width = self.font.measure("Tab X") + 2 * self.padding
+        return Rect(
+            tabs_start + tab_width * i,
+            self.tabbar_top,
+            tabs_start + tab_width * (i + 1),
+            self.tabbar_bottom,
+        )
+
+    def paint(self):
+        cmds: list[DrawItem] = []
+        cmds.append(DrawRect(Rect(0, 0, WIDTH, self.bottom), "white"))
+        cmds.append(DrawLine(0, self.bottom, WIDTH, self.bottom, "black", 1))
+        cmds.append(DrawOutline(self.newtab_rect, "black", 1))
+        cmds.append(
+            DrawText(
+                self.newtab_rect.left + self.padding,
+                self.newtab_rect.top,
+                "+",
+                self.font,
+                "black",
+            )
+        )
+        for i, tab in enumerate(self.browser.tabs):
+            bounds = self.tab_rect(i)
+            cmds.append(DrawLine(bounds.left, 0, bounds.left, bounds.bottom, "black", 1))
+            cmds.append(DrawLine(bounds.right, 0, bounds.right, bounds.bottom, "black", 1))
+            cmds.append(
+                DrawText(
+                    bounds.left + self.padding,
+                    bounds.top + self.padding,
+                    f"Tab {i}",
+                    self.font,
+                    "black",
+                )
+            )
+            if tab == self.browser.active_tab:
+                cmds.append(DrawLine(0, bounds.bottom, bounds.left, bounds.bottom, "black", 1))
+                cmds.append(DrawLine(bounds.right, bounds.bottom, WIDTH, bounds.bottom, "black", 1))
+        return cmds
+
+    def click(self, x: int, y: int):
+        if self.newtab_rect.containsPoint(x, y):
+            default_url = URL("https://browser.engineering/", self.browser.skip_ssl_verify)
+            self.browser.new_tab(default_url, self.browser.html_tree, self.browser.layout_tree)
+
 class Browser:
-    def __init__(self):
+    def __init__(self, html_tree: bool, layout_tree: bool, skip_ssl_verify: bool):
         self.tabs: list[Tab] = []
         self.active_tab: Tab
         self.window = tkinter.Tk()
@@ -937,6 +1046,10 @@ class Browser:
         # self.window.bind("<Configure>", self.window_resize)
         self.window.bind("<Button-1>", self.handle_click)
         self.url: URL
+        self.chrome = Chrome(self)
+        self.html_tree = html_tree
+        self.layout_tree = layout_tree
+        self.skip_ssl_verify = skip_ssl_verify
 
     def handle_down(self, e: tkinter.Event):
         self.active_tab.scrolldown()
@@ -947,22 +1060,28 @@ class Browser:
         self.draw()
 
     def handle_click(self, e: tkinter.Event):
-        self.active_tab.click(e.x, e.y)
+        if e.y < self.chrome.bottom:
+            self.chrome.click(e.x, e.y)
+        else:
+            tab_y = e.y = self.chrome.bottom
+            self.active_tab.click(e.x, tab_y)
         self.draw()
 
     def draw(self):
         self.canvas.delete("all")
-        self.active_tab.draw(self.canvas)
+        self.active_tab.draw(self.canvas, self.chrome.bottom)
+        for cmd in self.chrome.paint():
+            cmd.execute(0, self.canvas)
 
     def new_tab(self, url: URL, html_tree: bool, layout_tree: bool):
-        new_tab = Tab(html_tree, layout_tree)
+        new_tab = Tab(HEIGHT - self.chrome.bottom, html_tree, layout_tree)
         new_tab.load(url)
         self.active_tab = new_tab
         self.tabs.append(new_tab)
         self.draw()
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
     parser = argparse.ArgumentParser(
         prog="cheap-browser",
         description="A tiny educational browser",
@@ -988,9 +1107,14 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    Browser().new_tab(
-        URL(args.url, args.skip_ssl_verify),
+    browser = Browser(
         args.html_tree,
         args.layout_tree,
+        args.skip_ssl_verify,
+    )
+    browser.new_tab(
+        URL(args.url, browser.skip_ssl_verify),
+        browser.html_tree,
+        browser.layout_tree,
     )
     tkinter.mainloop()
