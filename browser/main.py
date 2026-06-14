@@ -110,6 +110,14 @@ class URL:
 
     def __repr__(self) -> str:
         return f"{self.scheme}://{self.host}:{self.port}{self.path}"
+    
+    def __str__(self):
+        port_part = ":" + str(self.port)
+        if self.scheme == "https" and self.port == 443:
+            port_part = ""
+        if self.scheme == "http" and self.port == 80:
+            port_part = ""
+        return self.scheme + "://" + self.host + port_part + self.path
 
 
 class Text:
@@ -744,11 +752,11 @@ class LineLayout:
         for word in self.children:
             word.layout()
 
-        max_ascent = max([word.font.metrics("ascent") for word in self.children])
+        max_ascent = max([word.font.metrics("ascent") for word in self.children], default=0)
         baseline = int(self.y + 1.25 * max_ascent)
         for word in self.children:
             word.y = baseline - word.font.metrics("ascent")
-        max_descent = max([word.font.metrics("descent") for word in self.children])
+        max_descent = max([word.font.metrics("descent") for word in self.children], default=0)
         self.height = int(1.25 * (max_ascent + max_descent))
 
     def paint(self) -> list[DrawText]:
@@ -877,6 +885,7 @@ class Tab:
         self.height = HEIGHT
         self.scroll = 0
         self.tab_height = tab_height
+        self.history: list[URL] = []
 
     def draw(self, canvas: tkinter.Canvas, offset: int):
         for cmd in self.display_list:
@@ -887,7 +896,10 @@ class Tab:
             cmd.execute(self.scroll - offset, canvas)
 
     def load(self, url: URL):
+        self.history.append(url)
         self.url = url
+
+        logging.info(f"loading [{url}]")
         body = url.request()
         self.nodes = HTMLParser(body).parse()
         if self.html_tree:
@@ -938,6 +950,7 @@ class Tab:
     #         self.draw()
 
     def click(self, x: int, y: int):
+        logging.info(f"clicked. x={x} y={y}")
         y += self.scroll
         objs = [
             obj
@@ -949,6 +962,7 @@ class Tab:
 
         # 最後（一番手前）の要素をクリックしたと想定
         elt = objs[-1].node
+        logging.info(f"clicked. elt=[{elt}]")
 
         # ルートに向かってリンク要素を探す
         while elt:
@@ -958,6 +972,12 @@ class Tab:
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
             elt = elt.parent
+
+    def go_back(self):
+        if len(self.history) > 1:
+            self.history.pop()
+            back = self.history.pop()
+            self.load(back)
 
 
 class Chrome:
@@ -975,7 +995,22 @@ class Chrome:
             self.padding + plus_width,
             self.padding + self.font_height,
         )
-        self.bottom = self.tabbar_bottom
+        self.urlbar_top = self.tabbar_bottom
+        self.urlbar_bottom = self.urlbar_top + self.font_height + 2 * self.padding
+        self.bottom = self.urlbar_bottom
+        back_width = self.font.measure("<") + 2 * self.padding
+        self.back_rect = Rect(
+            self.padding,
+            self.urlbar_top + self.padding,
+            self.padding + back_width,
+            self.urlbar_bottom - self.padding,
+        )
+        self.address_rect = Rect(
+            self.back_rect.top + self.padding,
+            self.urlbar_top + self.padding,
+            WIDTH - self.padding,
+            self.urlbar_bottom - self.padding,
+        )
 
     def tab_rect(self, i: int):
         tabs_start = self.newtab_rect.right + self.padding
@@ -997,6 +1032,27 @@ class Chrome:
                 self.newtab_rect.left + self.padding,
                 self.newtab_rect.top,
                 "+",
+                self.font,
+                "black",
+            )
+        )
+        cmds.append(DrawOutline(self.back_rect, "black", 1))
+        cmds.append(
+            DrawText(
+                self.back_rect.left + self.padding,
+                self.back_rect.top,
+                "<",
+                self.font,
+                "black"
+            )
+        )
+        cmds.append(DrawOutline(self.address_rect, "black", 1))
+        url = str(self.browser.active_tab.url)
+        cmds.append(
+            DrawText(
+                self.address_rect.left + self.padding,
+                self.address_rect.top,
+                url,
                 self.font,
                 "black",
             )
@@ -1023,6 +1079,8 @@ class Chrome:
         if self.newtab_rect.containsPoint(x, y):
             default_url = URL("https://browser.engineering/", self.browser.skip_ssl_verify)
             self.browser.new_tab(default_url, self.browser.html_tree, self.browser.layout_tree)
+        elif self.back_rect.containsPoint(x, y):
+            self.browser.active_tab.go_back()
 
 class Browser:
     def __init__(self, html_tree: bool, layout_tree: bool, skip_ssl_verify: bool):
@@ -1063,7 +1121,7 @@ class Browser:
         if e.y < self.chrome.bottom:
             self.chrome.click(e.x, e.y)
         else:
-            tab_y = e.y = self.chrome.bottom
+            tab_y = e.y - self.chrome.bottom
             self.active_tab.click(e.x, tab_y)
         self.draw()
 
