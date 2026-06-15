@@ -881,16 +881,34 @@ RUNTIME_JS = open("browser/runtime.js").read()
 
 
 class JSContext:
-    def __init__(self):
+    def __init__(self, tab: Tab):
+        self.tab = tab
         self.interp = dukpy.JSInterpreter()
-        self.interp.export_function("log", print)  # type: ignore[attr-defined]
         self.interp.evaljs(RUNTIME_JS)  # type: ignore[attr-defined]
+        self.interp.export_function("log", print)  # type: ignore[attr-defined]
+        self.interp.export_function("querySelectorAll", self.querySelectorAll)  # type: ignore[attr-defined]
+        self.node_to_handle: dict[Node, int] = {}
+        self.handle_to_node: dict[int, Node] = {}
 
     def run(self, script: str, code: str):
         try:
             return self.interp.evaljs(code)  # type: ignore[attr-defined]
         except dukpy.JSRuntimeError as e:  # type: ignore[attr-defined]
             print(f"Script {script} crashed.", e)  # type: ignore[reportUnknownArgumentType]
+
+    def querySelectorAll(self, selector_text: str):
+        selector = CSSParser(selector_text).selector()
+        nodes = [node for node in node_tree_to_list(self.tab.nodes, []) if selector.matches(node)]
+        return [self.get_handle(node) for node in nodes]
+
+    def get_handle(self, elt: Node):
+        if elt not in self.node_to_handle:
+            handle = len(self.node_to_handle)
+            self.node_to_handle[elt] = handle
+            self.handle_to_node[handle] = elt
+        else:
+            handle = self.node_to_handle[elt]
+        return handle
 
 
 SCROLL_STEP = 100
@@ -929,7 +947,7 @@ class Tab:
             for node in node_tree_to_list(self.nodes, [])
             if isinstance(node, Element) and node.tag == "script" and "src" in node.attributes
         ]
-        self.js = JSContext()
+        self.js = JSContext(self)
         for script in scripts:
             script_url = url.resolve(script)
             logging.info(f"script found. [{script_url}]")
