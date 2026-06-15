@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-import dukpy
+import dukpy  # type: ignore[import-untyped]
 
 type DisplayItem = tuple[int, int, str, tkinter.font.Font, str]
 type DrawItem = DrawText | DrawRect | DrawOutline | DrawLine
@@ -877,6 +877,19 @@ def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
         paint_tree(child, display_list)
 
 
+RUNTIME_JS = open("browser/runtime.js").read()
+
+
+class JSContext:
+    def __init__(self):
+        self.interp = dukpy.JSInterpreter()
+        self.interp.export_function("log", print)  # type: ignore[attr-defined]
+        self.interp.evaljs(RUNTIME_JS)  # type: ignore[attr-defined]
+
+    def run(self, code: str):
+        return self.interp.evaljs(code)  # type: ignore[attr-defined]
+
+
 SCROLL_STEP = 100
 
 
@@ -913,13 +926,16 @@ class Tab:
             for node in node_tree_to_list(self.nodes, [])
             if isinstance(node, Element) and node.tag == "script" and "src" in node.attributes
         ]
+        self.js = JSContext()
         for script in scripts:
             script_url = url.resolve(script)
+            logging.info(f"script found. [{script_url}]")
             try:
                 body = script_url.request()
+                self.js.run(body)
             except Exception:
                 continue
-            print(f"Script returned: {dukpy.evaljs(body)}")  # type: ignore[attr-defined]
+            # print(f"Script returned: {dukpy.evaljs(body)}")  # type: ignore[attr-defined]
 
         css_rules = DEFAULT_STYLE_SHEET.copy()
         links = [
