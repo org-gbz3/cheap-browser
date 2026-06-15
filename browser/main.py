@@ -887,8 +887,9 @@ class JSContext:
         self.interp.evaljs(RUNTIME_JS)  # type: ignore[attr-defined]
         self.interp.export_function("log", print)  # type: ignore[attr-defined]
         self.interp.export_function("querySelectorAll", self.querySelectorAll)  # type: ignore[attr-defined]
-        self.node_to_handle: dict[Node, int] = {}
-        self.handle_to_node: dict[int, Node] = {}
+        self.interp.export_function("getAttribute", self.getAttribute)  # type: ignore[attr-defined]
+        self.node_to_handle: dict[Element, int] = {}
+        self.handle_to_node: dict[int, Element] = {}
 
     def run(self, script: str, code: str):
         try:
@@ -898,10 +899,14 @@ class JSContext:
 
     def querySelectorAll(self, selector_text: str):
         selector = CSSParser(selector_text).selector()
-        nodes = [node for node in node_tree_to_list(self.tab.nodes, []) if selector.matches(node)]
+        nodes = [
+            node
+            for node in node_tree_to_list(self.tab.nodes, [])
+            if selector.matches(node) and isinstance(node, Element)
+        ]
         return [self.get_handle(node) for node in nodes]
 
-    def get_handle(self, elt: Node):
+    def get_handle(self, elt: Element):
         if elt not in self.node_to_handle:
             handle = len(self.node_to_handle)
             self.node_to_handle[elt] = handle
@@ -909,6 +914,10 @@ class JSContext:
         else:
             handle = self.node_to_handle[elt]
         return handle
+
+    def getAttribute(self, handle: int, attr: str):
+        elt = self.handle_to_node[handle]
+        return elt.attributes.get(attr, "")
 
 
 SCROLL_STEP = 100
