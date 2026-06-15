@@ -886,8 +886,11 @@ class JSContext:
         self.interp.export_function("log", print)  # type: ignore[attr-defined]
         self.interp.evaljs(RUNTIME_JS)  # type: ignore[attr-defined]
 
-    def run(self, code: str):
-        return self.interp.evaljs(code)  # type: ignore[attr-defined]
+    def run(self, script: str, code: str):
+        try:
+            return self.interp.evaljs(code)  # type: ignore[attr-defined]
+        except dukpy.JSRuntimeError as e:  # type: ignore[attr-defined]
+            print(f"Script {script} crashed.", e)  # type: ignore[reportUnknownArgumentType]
 
 
 SCROLL_STEP = 100
@@ -932,7 +935,7 @@ class Tab:
             logging.info(f"script found. [{script_url}]")
             try:
                 body = script_url.request()
-                self.js.run(body)
+                self.js.run(script, body)
             except Exception:
                 continue
             # print(f"Script returned: {dukpy.evaljs(body)}")  # type: ignore[attr-defined]
