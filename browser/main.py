@@ -16,7 +16,7 @@ type DisplayItem = tuple[int, int, str, tkinter.font.Font, str]
 type DrawItem = DrawText | DrawRect | DrawOutline | DrawLine
 type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
 type Node = Element | Text
-type Layout = DocumentLayout | BlockLayout | LineLayout | TextLayout
+type Layout = DocumentLayout | BlockLayout | LineLayout | InputLayout | TextLayout
 type Focusable = Literal["address bar"] | None
 
 
@@ -593,6 +593,9 @@ class DocumentLayout:
     def paint(self) -> list[DrawItem]:
         return []
 
+    def should_paint(self):
+        return True
+
     def __repr__(self) -> str:
         return repr(self.node)
 
@@ -627,6 +630,8 @@ class BlockLayout:
             ]
         ):
             return "block"
+        elif self.node.children or self.node.tag == "input":
+            return "inline"
         elif self.node.children:
             return "inline"
         else:
@@ -663,8 +668,13 @@ class BlockLayout:
             for word in node.text.split():
                 self.word(node, word)
         else:
-            for child in node.children:
-                self.recurse(child)
+            if node.tag == "br":
+                self.new_line()
+            elif node.tag == "input" or node.tag == "button":
+                self.input(node)
+            else:
+                for child in node.children:
+                    self.recurse(child)
 
     # def token(self, tok: Text | Element):
     #     if isinstance(tok, Text):
@@ -736,13 +746,44 @@ class BlockLayout:
 
         return cmds
 
+    def input(self, node: Element):
+        w = INPUT_WIDTH_PX
+        if self.cursor_x + w > self.width:
+            self.new_line()
+
+        assert isinstance(self.children[-1], LineLayout)
+        line = self.children[-1]
+        previous_word = line.children[-1] if line.children else None
+        input = InputLayout(node, line, previous_word)
+        line.children.append(input)
+
+        weight = node.style["font-weight"]
+        if weight not in ("normal", "bold"):
+            raise ValueError(f"invalid font-weight: {weight}")
+
+        style = node.style["font-style"]
+        if style == "normal":
+            style = "roman"
+        if style not in ("roman", "italic"):
+            raise ValueError(f"invalid font-style: {style}")
+
+        size = int(float(node.style["font-size"][:-2]) * 0.75)
+        font = get_font(size, weight, style)
+
+        self.cursor_x += w + font.measure(" ")
+
+    def should_paint(self):
+        return isinstance(self.node, Text) or (
+            self.node.tag != "input" and self.node.tag != "button"
+        )
+
 
 class LineLayout:
     def __init__(self, node: Node, parent: BlockLayout, previous: LineLayout | None):
         self.node = node
         self.parent = parent
         self.previous = previous
-        self.children: list[TextLayout] = []
+        self.children: list[TextLayout | InputLayout] = []
 
     def layout(self):
         self.width = self.parent.width
@@ -765,9 +806,14 @@ class LineLayout:
     def paint(self) -> list[DrawText]:
         return []
 
+    def should_paint(self):
+        return True
+
 
 class TextLayout:
-    def __init__(self, node: Text, word: str, parent: LineLayout, previous: TextLayout | None):
+    def __init__(
+        self, node: Text, word: str, parent: LineLayout, previous: TextLayout | InputLayout | None
+    ):
         self.node = node
         self.word = word
         self.children = []
@@ -801,6 +847,74 @@ class TextLayout:
     def paint(self):
         color = self.node.style["color"]
         return [DrawText(self.x, self.y, self.word, self.font, color)]
+
+    def should_paint(self):
+        return True
+
+
+INPUT_WIDTH_PX = 200
+
+
+class InputLayout:
+    def __init__(
+        self,
+        node: Element,
+        parent: BlockLayout | LineLayout,
+        previous: TextLayout | InputLayout | None,
+    ):
+        self.node = node
+        self.children = []
+        self.parent = parent
+        self.previous = previous
+        self.y = 0
+
+    def self_rect(self):
+        return Rect(self.x, self.y, self.x + self.width, self.y + self.height)
+
+    def layout(self):
+        weight = self.node.style["font-weight"]
+        if weight not in ("normal", "bold"):
+            raise ValueError(f"invalid font-style: {weight}")
+
+        style = self.node.style["font-style"]
+        if style == "normal":
+            style = "roman"
+        if style not in ("roman", "italic"):
+            raise ValueError(f"invalid font-style: {style}")
+
+        size = int(float(self.node.style["font-size"][:-2]) * 0.75)
+        self.font = get_font(size, weight, style)
+
+        self.width = INPUT_WIDTH_PX
+        if self.previous:
+            space = self.previous.font.measure(" ")
+            self.x = self.previous.x + self.previous.width + space
+        else:
+            self.x = self.parent.x
+
+        self.height = self.font.metrics("linespace")
+
+    def paint(self):
+        cmds: list[DrawItem] = []
+        bgcolor = self.node.style.get("background-color", "transparent")
+        if bgcolor != "transparent":
+            rect = DrawRect(self.self_rect(), bgcolor)
+            cmds.append(rect)
+
+        text = ""
+        if self.node.tag == "input":
+            text = self.node.attributes.get("value", "")
+        elif self.node.tag == "button":
+            if len(self.node.children) == 1 and isinstance(self.node.children[0], Text):
+                text = self.node.children[0].text
+            else:
+                print("Ignoring HTML contents inside button")
+        color = self.node.style["color"]
+        cmds.append(DrawText(self.x, self.y, text, self.font, color))
+        return cmds
+
+    def should_paint(self):
+        return True
 
 
 class DrawText:
@@ -872,7 +986,8 @@ class DrawLine:
 
 
 def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
-    display_list.extend(layout_object.paint())
+    if layout_object.should_paint():
+        display_list.extend(layout_object.paint())
     for child in layout_object.children:
         paint_tree(child, display_list)
 
