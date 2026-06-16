@@ -877,6 +877,7 @@ def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
         paint_tree(child, display_list)
 
 
+EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(dukpy.type)"
 RUNTIME_JS = open("browser/runtime.js").read()
 
 
@@ -918,6 +919,10 @@ class JSContext:
     def getAttribute(self, handle: int, attr: str):
         elt = self.handle_to_node[handle]
         return elt.attributes.get(attr, "")
+
+    def dispatch_event(self, type: str, elt: Element):
+        handle = self.node_to_handle.get(elt, -1)
+        self.interp.evaljs(EVENT_DISPATCH_JS, type=type, handle=handle)  # type: ignore[reportUnknownArgumentType]
 
 
 SCROLL_STEP = 100
@@ -1031,8 +1036,13 @@ class Tab:
             if isinstance(elt, Text):
                 pass
             elif elt.tag == "a" and "href" in elt.attributes:
+                self.js.dispatch_event("click", elt)
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
+            elif elt.tag == "input":
+                self.js.dispatch_event("click", elt)
+            elif elt.tag == "button":
+                self.js.dispatch_event("click", elt)
             elt = elt.parent
 
     def go_back(self):
