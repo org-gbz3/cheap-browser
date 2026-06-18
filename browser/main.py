@@ -17,7 +17,7 @@ type DrawItem = DrawText | DrawRect | DrawOutline | DrawLine
 type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
 type Node = Element | Text
 type Layout = DocumentLayout | BlockLayout | LineLayout | InputLayout | TextLayout
-type Focusable = Literal["address bar"] | None
+type Focusable = Literal["address bar", "content"] | None
 
 
 # JST タイムゾーンの設定
@@ -129,6 +129,7 @@ class Text:
         self.children = []
         self.parent = parent
         self.style: dict[str, str]
+        self.is_focused: bool = False
 
     def __repr__(self) -> str:
         return repr(self.text)
@@ -141,6 +142,7 @@ class Element:
         self.children: list[Node] = []
         self.parent = parent
         self.style: dict[str, str]
+        self.is_focused: bool = False
 
     def __repr__(self) -> str:
         return "<" + self.tag + ">"
@@ -909,6 +911,11 @@ class InputLayout:
                 text = self.node.children[0].text
             else:
                 print("Ignoring HTML contents inside button")
+
+        if self.node.is_focused:
+            cx = self.x + self.font.measure(text)
+            cmds.append(DrawLine(cx, self.y, cx, self.y + self.height, "black", 1))
+
         color = self.node.style["color"]
         cmds.append(DrawText(self.x, self.y, text, self.font, color))
         return cmds
@@ -1052,6 +1059,7 @@ class Tab:
         self.scroll = 0
         self.tab_height = tab_height
         self.history: list[URL] = []
+        self.focus: Element | None = None
 
     def draw(self, canvas: tkinter.Canvas, offset: int):
         for cmd in self.display_list:
@@ -1087,7 +1095,7 @@ class Tab:
                 continue
             # print(f"Script returned: {dukpy.evaljs(body)}")  # type: ignore[attr-defined]
 
-        css_rules = DEFAULT_STYLE_SHEET.copy()
+        self.rules = DEFAULT_STYLE_SHEET.copy()
         links = [
             node.attributes["href"]
             for node in node_tree_to_list(self.nodes, [])
@@ -1103,8 +1111,11 @@ class Tab:
                 body = style_url.request()
             except Exception:
                 continue
-            css_rules.extend(CSSParser(body).parse())
-        style(self.nodes, sorted(css_rules, key=cascade_priority))
+            self.rules.extend(CSSParser(body).parse())
+        self.render()
+
+    def render(self):
+        style(self.nodes, sorted(self.rules, key=cascade_priority))
 
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
@@ -1133,6 +1144,7 @@ class Tab:
 
     def click(self, x: int, y: int):
         logging.info(f"clicked. x={x} y={y}")
+        self.focus = None
         y += self.scroll
         objs = [
             obj
@@ -1155,7 +1167,13 @@ class Tab:
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
             elif elt.tag == "input":
+                elt.attributes["value"] = ""
+                if self.focus:
+                    self.focus.is_focused = False
+                self.focus = elt
+                elt.is_focused = True
                 self.js.dispatch_event("click", elt)
+                return self.render()
             elif elt.tag == "button":
                 self.js.dispatch_event("click", elt)
             elt = elt.parent
@@ -1165,6 +1183,11 @@ class Tab:
             self.history.pop()
             back = self.history.pop()
             self.load(back)
+
+    def keypress(self, char: str):
+        if self.focus:
+            self.focus.attributes["value"] += char
+            self.render()
 
 
 class Chrome:
@@ -1296,11 +1319,16 @@ class Chrome:
     def keypress(self, char: str):
         if self.focus == "address bar":
             self.address_bar += char
+            return True
+        return False
 
     def enter(self):
         if self.focus == "address bar":
             self.browser.active_tab.load(URL(self.address_bar, self.browser.skip_ssl_verify))
             self.focus = None
+
+    def blur(self):
+        self.focus = None
 
 
 class Browser:
@@ -1331,6 +1359,7 @@ class Browser:
         self.html_tree = html_tree
         self.layout_tree = layout_tree
         self.skip_ssl_verify = skip_ssl_verify
+        self.focus: Focusable = None
 
     def handle_down(self, e: tkinter.Event):
         self.active_tab.scrolldown()
@@ -1342,8 +1371,11 @@ class Browser:
 
     def handle_click(self, e: tkinter.Event):
         if e.y < self.chrome.bottom:
+            self.focus = None
             self.chrome.click(e.x, e.y)
         else:
+            self.focus = "content"
+            self.chrome.blur()
             tab_y = e.y - self.chrome.bottom
             self.active_tab.click(e.x, tab_y)
         self.draw()
@@ -1353,8 +1385,11 @@ class Browser:
             return
         if not (0x20 <= ord(e.char) < 0x7F):
             return
-        self.chrome.keypress(e.char)
-        self.draw()
+        if self.chrome.keypress(e.char):
+            self.draw()
+        elif self.focus == "content":
+            self.active_tab.keypress(e.char)
+            self.draw()
 
     def handle_enter(self, e: tkinter.Event):
         self.chrome.enter()
