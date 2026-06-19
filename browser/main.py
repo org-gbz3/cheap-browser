@@ -6,6 +6,7 @@ import socket
 import ssl
 import tkinter
 import tkinter.font
+import urllib.parse
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -52,7 +53,7 @@ class URL:
             self.host, port = self.host.split(":", 1)
             self.port = int(port)
 
-    def request(self) -> str:
+    def request(self, payload: str | None = None):
         s = socket.socket(
             family=socket.AF_INET,
             type=socket.SOCK_STREAM,
@@ -68,9 +69,15 @@ class URL:
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
             s = ctx.wrap_socket(s, server_hostname=self.host)
 
-        request = f"GET {self.path} HTTP/1.0\r\n"
+        method = "POST" if payload else "GET"
+        request = f"{method} {self.path} HTTP/1.0\r\n"
         request += f"Host: {self.host}\r\n"
+        if payload:
+            length = len(payload.encode("utf8"))
+            request += f"Content-Length: {length}\r\n"
         request += "\r\n"
+        if payload:
+            request += payload
         s.send(request.encode("utf8"))
 
         response = s.makefile("r", encoding="utf8", newline="\r\n")
@@ -1069,12 +1076,12 @@ class Tab:
                 continue
             cmd.execute(self.scroll - offset, canvas)
 
-    def load(self, url: URL):
+    def load(self, url: URL, payload: str | None = None):
         self.history.append(url)
         self.url = url
 
         logging.info(f"loading [{url}]")
-        body = url.request()
+        body = url.request(payload)
         self.nodes = HTMLParser(body).parse()
         if self.html_tree:
             print_html_tree(self.nodes)
@@ -1175,6 +1182,10 @@ class Tab:
                 self.js.dispatch_event("click", elt)
                 return self.render()
             elif elt.tag == "button":
+                while elt:
+                    if elt.tag == "form" and "action" in elt.attributes:
+                        return self.submit_form(elt)
+                    elt = elt.parent
                 self.js.dispatch_event("click", elt)
             elt = elt.parent
 
@@ -1188,6 +1199,22 @@ class Tab:
         if self.focus:
             self.focus.attributes["value"] += char
             self.render()
+
+    def submit_form(self, elt: Element):
+        inputs = [
+            node
+            for node in node_tree_to_list(elt, [])
+            if isinstance(node, Element) and node.tag == "input" and "name" in node.attributes
+        ]
+        body = ""
+        for input in inputs:
+            name = input.attributes["name"]
+            value = input.attributes.get("value", "")
+            name = urllib.parse.quote(name)
+            body += f"&{name}={value}"
+        body = body[1:]
+        url = self.url.resolve(elt.attributes["action"])
+        self.load(url, body)
 
 
 class Chrome:
