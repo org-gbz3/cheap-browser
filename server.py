@@ -1,41 +1,87 @@
-import argparse
-from functools import partial
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+import socket
+import urllib.parse
+
+ENTRIES = ["Pavel was here"]
 
 
-class MyHandler(SimpleHTTPRequestHandler):
-    def do_POST(self):
-        # POST処理の実装
-        content_length = int(self.headers["Content-Length"])
-        post_data = self.rfile.read(content_length)
-        print(f"{len(post_data)} bytes received.")
-
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(b'{"status": "POST OK"}')
+def show_comments():
+    out = "<!doctype html>"
+    for entry in ENTRIES:
+        out += f"<p>{entry}</p>"
+    out += "<form action=add method=post>"
+    out += "<p><input name=guest></p>"
+    out += "<p><button>Sign the book!</button></p>"
+    out += "</form>"
+    return out
 
 
-def run():
-    # コマンドライン引数の定義
-    parser = argparse.ArgumentParser(description="Custom HTTP Server")
-    parser.add_argument("--directory", "-d", default=".", help="Directory to serve")
-    parser.add_argument("port", type=int, nargs="?", default=8000, help="Port to listen on")
-    args = parser.parse_args()
-
-    server_address = ("", args.port)
-
-    # functools.partial を使用して、directory 引数をあらかじめ渡したハンドラファクトリを作成
-    handler_factory = partial(MyHandler, directory=args.directory)
-
-    httpd = HTTPServer(server_address, handler_factory)
-    print(f"Serving HTTP on 0.0.0.0 port {args.port} (from {args.directory}) ...")
-
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        httpd.server_close()
+def form_decode(body: str | None):
+    params: dict[str, str] = {}
+    if body is None:
+        return params
+    for field in body.split("&"):
+        name, value = field.split("=", 1)
+        name = urllib.parse.unquote_plus(name)
+        value = urllib.parse.unquote_plus(value)
+        params[name] = value
+    return params
 
 
-if __name__ == "__main__":
-    run()
+def add_entry(params: dict[str, str]):
+    if "guest" in params:
+        ENTRIES.append(params["guest"])
+    return show_comments()
+
+
+def not_found(url: str, method: str):
+    out = "<!doctype html>"
+    out += f"<h1>{method} {url} not found!</h1>"
+    return out
+
+
+def do_request(method: str, url: str, headers: dict[str, str], body: str | None):
+    if method == "GET" and url == "/":
+        return "200 OK", show_comments()
+    elif method == "POST" and url == "/add":
+        params = form_decode(body)
+        return "200 OK", add_entry(params)
+    else:
+        return "404 Not Found", not_found(url, method)
+
+
+def handle_connection(conx: socket.socket):
+    req = conx.makefile("b", 0)
+    reqline = req.readline().decode("utf8")
+    method, url, _ = reqline.split(" ", 2)
+    assert method in ["GET", "POST"]
+    headers: dict[str, str] = {}
+    while True:
+        line = req.readline().decode("utf8")
+        if line == "\r\n":
+            break
+        header, value = line.split(":", 1)
+        headers[header.casefold()] = value.strip()
+
+    if "content-length" in headers:
+        length = int(headers["content-length"])
+        bbody: bytes = req.read(length)
+        body = bbody.decode("utf8")
+    else:
+        body = None
+    status, body = do_request(method, url, headers, body)
+    response = f"HTTP/1.0 {status}\r\n"
+    response += "Content-Length: {}\r\n".format(len(body.encode("utf8")))
+    response += "\r\n" + body
+    conx.send(response.encode("utf8"))
+    conx.close()
+
+
+s = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+s.bind(("", 8000))
+s.listen()
+
+while True:
+    conx, addr = s.accept()
+    handle_connection(conx)
