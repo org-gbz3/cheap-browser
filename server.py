@@ -1,10 +1,12 @@
+import random
 import socket
 import urllib.parse
 
 ENTRIES = ["Pavel was here"]
+SESSIONS: dict[str, dict[str, str]] = {}
 
 
-def show_comments():
+def show_comments(session: dict[str, str]):
     out = "<!doctype html>"
     out += "<link rel=stylesheet href=/comment.css>"
     out += "<script src=/comment.js></script>"
@@ -30,10 +32,10 @@ def form_decode(body: str | None):
     return params
 
 
-def add_entry(params: dict[str, str]):
+def add_entry(session: dict[str, str], params: dict[str, str]):
     if "guest" in params and len(params["guest"]) <= 100:
         ENTRIES.append(params["guest"])
-    return show_comments()
+    return show_comments(session)
 
 
 def not_found(url: str, method: str):
@@ -42,9 +44,11 @@ def not_found(url: str, method: str):
     return out
 
 
-def do_request(method: str, url: str, headers: dict[str, str], body: str | None):
+def do_request(
+    session: dict[str, str], method: str, url: str, headers: dict[str, str], body: str | None
+):
     if method == "GET" and url == "/":
-        return "200 OK", show_comments()
+        return "200 OK", show_comments(session)
     elif method == "GET" and url == "/comment.js":
         with open("comment.js") as f:
             return "200 OK", f.read()
@@ -54,7 +58,8 @@ def do_request(method: str, url: str, headers: dict[str, str], body: str | None)
 
     elif method == "POST" and url == "/add":
         params = form_decode(body)
-        return "200 OK", add_entry(params)
+        add_entry(session, params)
+        return "200 OK", show_comments(session)
     else:
         return "404 Not Found", not_found(url, method)
 
@@ -78,9 +83,16 @@ def handle_connection(conx: socket.socket):
         body = bbody.decode("utf8")
     else:
         body = None
-    status, body = do_request(method, url, headers, body)
+    if "cookie" in headers:
+        token = headers["cookie"][len("token=") :]
+    else:
+        token = str(random.random())[2:]
+    session = SESSIONS.setdefault(token, {})
+    status, body = do_request(session, method, url, headers, body)
     response = f"HTTP/1.0 {status}\r\n"
     response += "Content-Length: {}\r\n".format(len(body.encode("utf8")))
+    if "cookie" not in headers:
+        response += f"Set-Cookie: token={token}\r\n"
     response += "\r\n" + body
     conx.send(response.encode("utf8"))
     conx.close()
