@@ -6,16 +6,19 @@ import socket
 import ssl
 import tkinter
 import tkinter.font
+import urllib.parse
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
+
+import dukpy  # type: ignore[import-untyped]
 
 type DisplayItem = tuple[int, int, str, tkinter.font.Font, str]
 type DrawItem = DrawText | DrawRect | DrawOutline | DrawLine
 type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
 type Node = Element | Text
-type Layout = DocumentLayout | BlockLayout | LineLayout | TextLayout
-type Focusable = Literal["address bar"] | None
+type Layout = DocumentLayout | BlockLayout | LineLayout | InputLayout | TextLayout
+type Focusable = Literal["address bar", "content"] | None
 
 
 # JST タイムゾーンの設定
@@ -50,7 +53,7 @@ class URL:
             self.host, port = self.host.split(":", 1)
             self.port = int(port)
 
-    def request(self) -> str:
+    def request(self, payload: str | None = None):
         s = socket.socket(
             family=socket.AF_INET,
             type=socket.SOCK_STREAM,
@@ -66,9 +69,15 @@ class URL:
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
             s = ctx.wrap_socket(s, server_hostname=self.host)
 
-        request = f"GET {self.path} HTTP/1.0\r\n"
+        method = "POST" if payload else "GET"
+        request = f"{method} {self.path} HTTP/1.0\r\n"
         request += f"Host: {self.host}\r\n"
+        if payload:
+            length = len(payload.encode("utf8"))
+            request += f"Content-Length: {length}\r\n"
         request += "\r\n"
+        if payload:
+            request += payload
         s.send(request.encode("utf8"))
 
         response = s.makefile("r", encoding="utf8", newline="\r\n")
@@ -111,7 +120,7 @@ class URL:
 
     def __repr__(self) -> str:
         return f"{self.scheme}://{self.host}:{self.port}{self.path}"
-    
+
     def __str__(self):
         port_part = ":" + str(self.port)
         if self.scheme == "https" and self.port == 443:
@@ -127,6 +136,7 @@ class Text:
         self.children = []
         self.parent = parent
         self.style: dict[str, str]
+        self.is_focused: bool = False
 
     def __repr__(self) -> str:
         return repr(self.text)
@@ -139,6 +149,7 @@ class Element:
         self.children: list[Node] = []
         self.parent = parent
         self.style: dict[str, str]
+        self.is_focused: bool = False
 
     def __repr__(self) -> str:
         return "<" + self.tag + ">"
@@ -591,6 +602,9 @@ class DocumentLayout:
     def paint(self) -> list[DrawItem]:
         return []
 
+    def should_paint(self):
+        return True
+
     def __repr__(self) -> str:
         return repr(self.node)
 
@@ -625,6 +639,8 @@ class BlockLayout:
             ]
         ):
             return "block"
+        elif self.node.children or self.node.tag == "input":
+            return "inline"
         elif self.node.children:
             return "inline"
         else:
@@ -661,8 +677,13 @@ class BlockLayout:
             for word in node.text.split():
                 self.word(node, word)
         else:
-            for child in node.children:
-                self.recurse(child)
+            if node.tag == "br":
+                self.new_line()
+            elif node.tag == "input" or node.tag == "button":
+                self.input(node)
+            else:
+                for child in node.children:
+                    self.recurse(child)
 
     # def token(self, tok: Text | Element):
     #     if isinstance(tok, Text):
@@ -734,13 +755,44 @@ class BlockLayout:
 
         return cmds
 
+    def input(self, node: Element):
+        w = INPUT_WIDTH_PX
+        if self.cursor_x + w > self.width:
+            self.new_line()
+
+        assert isinstance(self.children[-1], LineLayout)
+        line = self.children[-1]
+        previous_word = line.children[-1] if line.children else None
+        input = InputLayout(node, line, previous_word)
+        line.children.append(input)
+
+        weight = node.style["font-weight"]
+        if weight not in ("normal", "bold"):
+            raise ValueError(f"invalid font-weight: {weight}")
+
+        style = node.style["font-style"]
+        if style == "normal":
+            style = "roman"
+        if style not in ("roman", "italic"):
+            raise ValueError(f"invalid font-style: {style}")
+
+        size = int(float(node.style["font-size"][:-2]) * 0.75)
+        font = get_font(size, weight, style)
+
+        self.cursor_x += w + font.measure(" ")
+
+    def should_paint(self):
+        return isinstance(self.node, Text) or (
+            self.node.tag != "input" and self.node.tag != "button"
+        )
+
 
 class LineLayout:
     def __init__(self, node: Node, parent: BlockLayout, previous: LineLayout | None):
         self.node = node
         self.parent = parent
         self.previous = previous
-        self.children: list[TextLayout] = []
+        self.children: list[TextLayout | InputLayout] = []
 
     def layout(self):
         self.width = self.parent.width
@@ -763,9 +815,14 @@ class LineLayout:
     def paint(self) -> list[DrawText]:
         return []
 
+    def should_paint(self):
+        return True
+
 
 class TextLayout:
-    def __init__(self, node: Text, word: str, parent: LineLayout, previous: TextLayout | None):
+    def __init__(
+        self, node: Text, word: str, parent: LineLayout, previous: TextLayout | InputLayout | None
+    ):
         self.node = node
         self.word = word
         self.children = []
@@ -799,6 +856,79 @@ class TextLayout:
     def paint(self):
         color = self.node.style["color"]
         return [DrawText(self.x, self.y, self.word, self.font, color)]
+
+    def should_paint(self):
+        return True
+
+
+INPUT_WIDTH_PX = 200
+
+
+class InputLayout:
+    def __init__(
+        self,
+        node: Element,
+        parent: BlockLayout | LineLayout,
+        previous: TextLayout | InputLayout | None,
+    ):
+        self.node = node
+        self.children = []
+        self.parent = parent
+        self.previous = previous
+        self.y = 0
+
+    def self_rect(self):
+        return Rect(self.x, self.y, self.x + self.width, self.y + self.height)
+
+    def layout(self):
+        weight = self.node.style["font-weight"]
+        if weight not in ("normal", "bold"):
+            raise ValueError(f"invalid font-style: {weight}")
+
+        style = self.node.style["font-style"]
+        if style == "normal":
+            style = "roman"
+        if style not in ("roman", "italic"):
+            raise ValueError(f"invalid font-style: {style}")
+
+        size = int(float(self.node.style["font-size"][:-2]) * 0.75)
+        self.font = get_font(size, weight, style)
+
+        self.width = INPUT_WIDTH_PX
+        if self.previous:
+            space = self.previous.font.measure(" ")
+            self.x = self.previous.x + self.previous.width + space
+        else:
+            self.x = self.parent.x
+
+        self.height = self.font.metrics("linespace")
+
+    def paint(self):
+        cmds: list[DrawItem] = []
+        bgcolor = self.node.style.get("background-color", "transparent")
+        if bgcolor != "transparent":
+            rect = DrawRect(self.self_rect(), bgcolor)
+            cmds.append(rect)
+
+        text = ""
+        if self.node.tag == "input":
+            text = self.node.attributes.get("value", "")
+        elif self.node.tag == "button":
+            if len(self.node.children) == 1 and isinstance(self.node.children[0], Text):
+                text = self.node.children[0].text
+            else:
+                print("Ignoring HTML contents inside button")
+
+        if self.node.is_focused:
+            cx = self.x + self.font.measure(text)
+            cmds.append(DrawLine(cx, self.y, cx, self.y + self.height, "black", 1))
+
+        color = self.node.style["color"]
+        cmds.append(DrawText(self.x, self.y, text, self.font, color))
+        return cmds
+
+    def should_paint(self):
+        return True
 
 
 class DrawText:
@@ -870,9 +1000,69 @@ class DrawLine:
 
 
 def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
-    display_list.extend(layout_object.paint())
+    if layout_object.should_paint():
+        display_list.extend(layout_object.paint())
     for child in layout_object.children:
         paint_tree(child, display_list)
+
+
+EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(new Event(dukpy.type))"
+RUNTIME_JS = open("browser/runtime.js").read()
+
+
+class JSContext:
+    def __init__(self, tab: Tab):
+        self.tab = tab
+        self.interp = dukpy.JSInterpreter()
+        self.interp.evaljs(RUNTIME_JS)  # type: ignore[attr-defined]
+        self.interp.export_function("log", print)  # type: ignore[attr-defined]
+        self.interp.export_function("querySelectorAll", self.querySelectorAll)  # type: ignore[attr-defined]
+        self.interp.export_function("getAttribute", self.getAttribute)  # type: ignore[attr-defined]
+        self.interp.export_function("innerHTML_set", self.innerHTML_set)  # type: ignore[attr-defined]
+        self.node_to_handle: dict[Element, int] = {}
+        self.handle_to_node: dict[int, Element] = {}
+
+    def run(self, script: str, code: str):
+        try:
+            return self.interp.evaljs(code)  # type: ignore[attr-defined]
+        except dukpy.JSRuntimeError as e:  # type: ignore[attr-defined]
+            print(f"Script {script} crashed.", e)  # type: ignore[reportUnknownArgumentType]
+
+    def querySelectorAll(self, selector_text: str):
+        selector = CSSParser(selector_text).selector()
+        nodes = [
+            node
+            for node in node_tree_to_list(self.tab.nodes, [])
+            if selector.matches(node) and isinstance(node, Element)
+        ]
+        return [self.get_handle(node) for node in nodes]
+
+    def get_handle(self, elt: Element):
+        if elt not in self.node_to_handle:
+            handle = len(self.node_to_handle)
+            self.node_to_handle[elt] = handle
+            self.handle_to_node[handle] = elt
+        else:
+            handle = self.node_to_handle[elt]
+        return handle
+
+    def getAttribute(self, handle: int, attr: str):
+        elt = self.handle_to_node[handle]
+        return elt.attributes.get(attr, "")
+
+    def dispatch_event(self, type: str, elt: Element):
+        handle = self.node_to_handle.get(elt, -1)
+        do_default = self.interp.evaljs(EVENT_DISPATCH_JS, type=type, handle=handle)  # type: ignore[reportUnknownArgumentType]
+        return not do_default
+
+    def innerHTML_set(self, handle: int, s: str):
+        doc = HTMLParser(f"<html><body>{s}</body></html>").parse()
+        new_nodes = doc.children[0].children
+        elt = self.handle_to_node[handle]
+        elt.children = new_nodes
+        for child in elt.children:
+            child.parent = elt
+        self.tab.render()
 
 
 SCROLL_STEP = 100
@@ -887,6 +1077,7 @@ class Tab:
         self.scroll = 0
         self.tab_height = tab_height
         self.history: list[URL] = []
+        self.focus: Element | None = None
 
     def draw(self, canvas: tkinter.Canvas, offset: int):
         for cmd in self.display_list:
@@ -896,17 +1087,33 @@ class Tab:
                 continue
             cmd.execute(self.scroll - offset, canvas)
 
-    def load(self, url: URL):
+    def load(self, url: URL, payload: str | None = None):
         self.history.append(url)
         self.url = url
 
         logging.info(f"loading [{url}]")
-        body = url.request()
+        body = url.request(payload)
         self.nodes = HTMLParser(body).parse()
         if self.html_tree:
             print_html_tree(self.nodes)
 
-        css_rules = DEFAULT_STYLE_SHEET.copy()
+        scripts = [
+            node.attributes["src"]
+            for node in node_tree_to_list(self.nodes, [])
+            if isinstance(node, Element) and node.tag == "script" and "src" in node.attributes
+        ]
+        self.js = JSContext(self)
+        for script in scripts:
+            script_url = url.resolve(script)
+            logging.info(f"script found. [{script_url}]")
+            try:
+                body = script_url.request()
+                self.js.run(script, body)
+            except Exception:
+                continue
+            # print(f"Script returned: {dukpy.evaljs(body)}")  # type: ignore[attr-defined]
+
+        self.rules = DEFAULT_STYLE_SHEET.copy()
         links = [
             node.attributes["href"]
             for node in node_tree_to_list(self.nodes, [])
@@ -922,8 +1129,11 @@ class Tab:
                 body = style_url.request()
             except Exception:
                 continue
-            css_rules.extend(CSSParser(body).parse())
-        style(self.nodes, sorted(css_rules, key=cascade_priority))
+            self.rules.extend(CSSParser(body).parse())
+        self.render()
+
+    def render(self):
+        style(self.nodes, sorted(self.rules, key=cascade_priority))
 
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
@@ -952,6 +1162,7 @@ class Tab:
 
     def click(self, x: int, y: int):
         logging.info(f"clicked. x={x} y={y}")
+        self.focus = None
         y += self.scroll
         objs = [
             obj
@@ -970,8 +1181,26 @@ class Tab:
             if isinstance(elt, Text):
                 pass
             elif elt.tag == "a" and "href" in elt.attributes:
+                if self.js.dispatch_event("click", elt):
+                    return
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
+            elif elt.tag == "input":
+                if self.js.dispatch_event("click", elt):
+                    return
+                elt.attributes["value"] = ""
+                if self.focus:
+                    self.focus.is_focused = False
+                self.focus = elt
+                elt.is_focused = True
+                return self.render()
+            elif elt.tag == "button":
+                if self.js.dispatch_event("click", elt):
+                    return
+                while elt:
+                    if elt.tag == "form" and "action" in elt.attributes:
+                        return self.submit_form(elt)
+                    elt = elt.parent
             elt = elt.parent
 
     def go_back(self):
@@ -979,6 +1208,31 @@ class Tab:
             self.history.pop()
             back = self.history.pop()
             self.load(back)
+
+    def keypress(self, char: str):
+        if self.focus:
+            if self.js.dispatch_event("keydown", self.focus):
+                return
+            self.focus.attributes["value"] += char
+            self.render()
+
+    def submit_form(self, elt: Element):
+        if self.js.dispatch_event("submit", elt):
+            return
+        inputs = [
+            node
+            for node in node_tree_to_list(elt, [])
+            if isinstance(node, Element) and node.tag == "input" and "name" in node.attributes
+        ]
+        body = ""
+        for input in inputs:
+            name = input.attributes["name"]
+            value = input.attributes.get("value", "")
+            name = urllib.parse.quote(name)
+            body += f"&{name}={value}"
+        body = body[1:]
+        url = self.url.resolve(elt.attributes["action"])
+        self.load(url, body)
 
 
 class Chrome:
@@ -1042,11 +1296,7 @@ class Chrome:
         cmds.append(DrawOutline(self.back_rect, "black", 1))
         cmds.append(
             DrawText(
-                self.back_rect.left + self.padding,
-                self.back_rect.top,
-                "<",
-                self.font,
-                "black"
+                self.back_rect.left + self.padding, self.back_rect.top, "<", self.font, "black"
             )
         )
         cmds.append(DrawOutline(self.address_rect, "black", 1))
@@ -1114,11 +1364,17 @@ class Chrome:
     def keypress(self, char: str):
         if self.focus == "address bar":
             self.address_bar += char
+            return True
+        return False
 
     def enter(self):
         if self.focus == "address bar":
             self.browser.active_tab.load(URL(self.address_bar, self.browser.skip_ssl_verify))
             self.focus = None
+
+    def blur(self):
+        self.focus = None
+
 
 class Browser:
     def __init__(self, html_tree: bool, layout_tree: bool, skip_ssl_verify: bool):
@@ -1148,6 +1404,7 @@ class Browser:
         self.html_tree = html_tree
         self.layout_tree = layout_tree
         self.skip_ssl_verify = skip_ssl_verify
+        self.focus: Focusable = None
 
     def handle_down(self, e: tkinter.Event):
         self.active_tab.scrolldown()
@@ -1159,8 +1416,11 @@ class Browser:
 
     def handle_click(self, e: tkinter.Event):
         if e.y < self.chrome.bottom:
+            self.focus = None
             self.chrome.click(e.x, e.y)
         else:
+            self.focus = "content"
+            self.chrome.blur()
             tab_y = e.y - self.chrome.bottom
             self.active_tab.click(e.x, tab_y)
         self.draw()
@@ -1168,10 +1428,13 @@ class Browser:
     def handle_key(self, e: tkinter.Event):
         if len(e.char) == 0:
             return
-        if not (0x20 <= ord(e.char) < 0x7f):
+        if not (0x20 <= ord(e.char) < 0x7F):
             return
-        self.chrome.keypress(e.char)
-        self.draw()
+        if self.chrome.keypress(e.char):
+            self.draw()
+        elif self.focus == "content":
+            self.active_tab.keypress(e.char)
+            self.draw()
 
     def handle_enter(self, e: tkinter.Event):
         self.chrome.enter()
@@ -1228,3 +1491,5 @@ if __name__ == "__main__":
         browser.layout_tree,
     )
     tkinter.mainloop()
+
+# ローカルHTTPサーバ起動$ python -m http.server --directory www

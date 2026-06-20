@@ -10,4 +10,6 @@ RUN set -eux; mkdir -p /usr/local/share/ca-certificates/custom; find /usr/local/
 
 RUN rm -rf /var/lib/apt/lists/*
 
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+
 USER vscode
