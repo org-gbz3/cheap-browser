@@ -1027,6 +1027,7 @@ class JSContext:
         self.interp.export_function("querySelectorAll", self.querySelectorAll)  # type: ignore[attr-defined]
         self.interp.export_function("getAttribute", self.getAttribute)  # type: ignore[attr-defined]
         self.interp.export_function("innerHTML_set", self.innerHTML_set)  # type: ignore[attr-defined]
+        self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)  # type: ignore[attr-defined]
         self.node_to_handle: dict[Element, int] = {}
         self.handle_to_node: dict[int, Element] = {}
 
@@ -1071,6 +1072,11 @@ class JSContext:
         for child in elt.children:
             child.parent = elt
         self.tab.render()
+
+    def XMLHttpRequest_send(self, method: str, url: str, body: str):
+        full_url = self.tab.url.resolve(url)
+        _, out = full_url.request(body)
+        return out
 
 
 SCROLL_STEP = 100
