@@ -33,6 +33,8 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
+COOKIE_JAR: dict[str, str] = {}
+
 
 class URL:
     def __init__(self, url: str, skip_ssl_verify: bool) -> None:
@@ -75,6 +77,9 @@ class URL:
         if payload:
             length = len(payload.encode("utf8"))
             request += f"Content-Length: {length}\r\n"
+        if self.host in COOKIE_JAR:
+            cookie = COOKIE_JAR[self.host]
+            request += f"Cookie: {cookie}\r\n"
         request += "\r\n"
         if payload:
             request += payload
@@ -85,7 +90,7 @@ class URL:
         version, status, explanation = statusline.split(" ", 2)
         print(f"ver={version} stat={status} exp={explanation}")
 
-        response_headers = {}
+        response_headers: dict[str, str] = {}
         while True:
             line = response.readline()
             if line == "\r\n":
@@ -96,6 +101,9 @@ class URL:
         assert "transfer-encoding" not in response_headers
         assert "content-encoding" not in response_headers
 
+        if "set-cookie" in response_headers:
+            cookie = response_headers["set-cookie"]
+            COOKIE_JAR[self.host] = cookie
         content = response.read()
         s.close()
 
