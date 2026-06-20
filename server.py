@@ -89,7 +89,7 @@ def handle_connection(conx: socket.socket):
 s = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-s.bind(("", 8000))
+s.bind(("127.0.0.1", 8000))
 s.listen()
 
 while True:
