@@ -1006,7 +1006,7 @@ def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
         paint_tree(child, display_list)
 
 
-EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(dukpy.type)"
+EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(new Event(dukpy.type))"
 RUNTIME_JS = open("browser/runtime.js").read()
 
 
@@ -1052,7 +1052,8 @@ class JSContext:
 
     def dispatch_event(self, type: str, elt: Element):
         handle = self.node_to_handle.get(elt, -1)
-        self.interp.evaljs(EVENT_DISPATCH_JS, type=type, handle=handle)  # type: ignore[reportUnknownArgumentType]
+        do_default = self.interp.evaljs(EVENT_DISPATCH_JS, type=type, handle=handle)  # type: ignore[reportUnknownArgumentType]
+        return not do_default
 
     def innerHTML_set(self, handle: int, s: str):
         doc = HTMLParser(f"<html><body>{s}</body></html>").parse()
@@ -1180,11 +1181,13 @@ class Tab:
             if isinstance(elt, Text):
                 pass
             elif elt.tag == "a" and "href" in elt.attributes:
-                self.js.dispatch_event("click", elt)
+                if self.js.dispatch_event("click", elt):
+                    return
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
             elif elt.tag == "input":
-                self.js.dispatch_event("click", elt)
+                if self.js.dispatch_event("click", elt):
+                    return
                 elt.attributes["value"] = ""
                 if self.focus:
                     self.focus.is_focused = False
@@ -1192,7 +1195,8 @@ class Tab:
                 elt.is_focused = True
                 return self.render()
             elif elt.tag == "button":
-                self.js.dispatch_event("click", elt)
+                if self.js.dispatch_event("click", elt):
+                    return
                 while elt:
                     if elt.tag == "form" and "action" in elt.attributes:
                         return self.submit_form(elt)
@@ -1207,12 +1211,14 @@ class Tab:
 
     def keypress(self, char: str):
         if self.focus:
-            self.js.dispatch_event("keydown", self.focus)
+            if self.js.dispatch_event("keydown", self.focus):
+                return
             self.focus.attributes["value"] += char
             self.render()
 
     def submit_form(self, elt: Element):
-        self.js.dispatch_event("submit", elt)
+        if self.js.dispatch_event("submit", elt):
+            return
         inputs = [
             node
             for node in node_tree_to_list(elt, [])
