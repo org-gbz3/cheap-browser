@@ -1018,6 +1018,7 @@ class JSContext:
         self.interp.export_function("log", print)  # type: ignore[attr-defined]
         self.interp.export_function("querySelectorAll", self.querySelectorAll)  # type: ignore[attr-defined]
         self.interp.export_function("getAttribute", self.getAttribute)  # type: ignore[attr-defined]
+        self.interp.export_function("innerHTML_set", self.innerHTML_set)  # type: ignore[attr-defined]
         self.node_to_handle: dict[Element, int] = {}
         self.handle_to_node: dict[int, Element] = {}
 
@@ -1052,6 +1053,15 @@ class JSContext:
     def dispatch_event(self, type: str, elt: Element):
         handle = self.node_to_handle.get(elt, -1)
         self.interp.evaljs(EVENT_DISPATCH_JS, type=type, handle=handle)  # type: ignore[reportUnknownArgumentType]
+
+    def innerHTML_set(self, handle: int, s: str):
+        doc = HTMLParser(f"<html><body>{s}</body></html>").parse()
+        new_nodes = doc.children[0].children
+        elt = self.handle_to_node[handle]
+        elt.children = new_nodes
+        for child in elt.children:
+            child.parent = elt
+        self.tab.render()
 
 
 SCROLL_STEP = 100
