@@ -121,7 +121,7 @@ class URL:
         content = response.read()
         s.close()
 
-        return content
+        return response_headers, content
 
     def resolve(self, url: str):
         if "://" in url:
@@ -1094,9 +1094,11 @@ class JSContext:
         if self.tab.url is None:
             return ""
         full_url = self.tab.url.resolve(url)
+        if not self.tab.allowed_request(full_url):
+            raise Exception("Cross-origin XHR blocked by CSP")
         if full_url.origin() != self.tab.url.origin():
             raise Exception("Cross-origin XHR request not allowed")
-        out = full_url.request(self.tab.url, body)
+        _, out = full_url.request(self.tab.url, body)
         return out
 
 
@@ -1123,15 +1125,26 @@ class Tab:
                 continue
             cmd.execute(self.scroll - offset, canvas)
 
+    def allowed_request(self, url: URL):
+        return self.allowed_origins is None or url.origin() in self.allowed_origins
+
     def load(self, url: URL, payload: str | None = None):
         self.history.append(url)
-        body = url.request(self.url, payload)
+        headers, body = url.request(self.url, payload)
         self.url = url
 
         logging.info(f"loading [{url}]")
         self.nodes = HTMLParser(body).parse()
         if self.html_tree:
             print_html_tree(self.nodes)
+
+        self.allowed_origins: list[str] | None = None
+        if "content-security-policy" in headers:
+            csp = headers["content-security-policy"].split()
+            if len(csp) > 0 and csp[0] == "default-src":
+                self.allowed_origins = []
+                for origin in csp[1:]:
+                    self.allowed_origins.append(URL(origin, url.skip_ssl_verify).origin())
 
         scripts = [
             node.attributes["src"]
@@ -1141,9 +1154,12 @@ class Tab:
         self.js = JSContext(self)
         for script in scripts:
             script_url = url.resolve(script)
+            if not self.allowed_request(script_url):
+                logging.error(f"Blocked script {script_url} due to CSP")
+                continue
             logging.info(f"script found. [{script_url}]")
             try:
-                body = script_url.request(url)
+                _, body = script_url.request(url)
                 self.js.run(script, body)
             except Exception:
                 continue
@@ -1160,9 +1176,12 @@ class Tab:
         ]
         for link in links:
             style_url = url.resolve(link)
+            if not self.allowed_request(style_url):
+                logging.error(f"Blocked stylesheet {style_url} due to CSP")
+                continue
             logging.info(f"css found. [{style_url}]")
             try:
-                body = style_url.request(url)
+                _, body = style_url.request(url)
             except Exception:
                 continue
             self.rules.extend(CSSParser(body).parse())

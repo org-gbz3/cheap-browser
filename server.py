@@ -28,6 +28,7 @@ def show_comments(session: dict[str, str]):
         out += "<p><button>Sign the book!</button></p>"
         out += f"<input name=nonce type=hidden value={nonce}>"
         out += "</form>"
+        out += "<script src=https://example.com/evil.js></script>"
     else:
         out += "<a href=/login>Sign in to write in the guest book</a>"
     return out
@@ -139,6 +140,7 @@ def handle_connection(conx: socket.socket):
     status, body = do_request(session, method, url, headers, body)
     response = f"HTTP/1.0 {status}\r\n"
     response += "Content-Length: {}\r\n".format(len(body.encode("utf8")))
+    response += "Content-Security-Policy: default-src http://localhost:8000\r\n"
     if "cookie" not in headers:
         response += f"Set-Cookie: token={token}; SameSite=Lax\r\n"
     response += "\r\n" + body
