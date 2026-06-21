@@ -18,11 +18,14 @@ def show_comments(session: dict[str, str]):
         out += f"<i>by {who}</i></p>"
 
     if "user" in session:
+        nonce = str(random.random())[2:]
+        session["nonce"] = nonce
         out += "<script src=/comment.js></script>"
         out += f"<h1>Hello, {session['user']}</h1>"
         out += "<form action=add method=post>"
         out += "<p><input name=guest></p>"
         out += "<p><button>Sign the book!</button></p>"
+        out += f"<input name=nonce type=hidden value={nonce}"
         out += "</form>"
     else:
         out += "<a href=/login>Sign in to write in the guest book</a>"
@@ -42,6 +45,10 @@ def form_decode(body: str | None):
 
 
 def add_entry(session: dict[str, str], params: dict[str, str]):
+    if "nonce" not in session or "nonce" not in params:
+        return
+    if session["nonce"] != params["nonce"]:
+        return
     if "user" not in session:
         return
     if "guest" in params and len(params["guest"]) <= 100:
