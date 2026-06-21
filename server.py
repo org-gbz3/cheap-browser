@@ -25,7 +25,7 @@ def show_comments(session: dict[str, str]):
         out += "<form action=add method=post>"
         out += "<p><input name=guest></p>"
         out += "<p><button>Sign the book!</button></p>"
-        out += f"<input name=nonce type=hidden value={nonce}"
+        out += f"<input name=nonce type=hidden value={nonce}>"
         out += "</form>"
     else:
         out += "<a href=/login>Sign in to write in the guest book</a>"
@@ -46,8 +46,10 @@ def form_decode(body: str | None):
 
 def add_entry(session: dict[str, str], params: dict[str, str]):
     if "nonce" not in session or "nonce" not in params:
+        print(f"## NG1 session={session} params={params}")
         return
     if session["nonce"] != params["nonce"]:
+        print(f"## NG2 session={session} params={params}")
         return
     if "user" not in session:
         return
@@ -137,7 +139,7 @@ def handle_connection(conx: socket.socket):
     response = f"HTTP/1.0 {status}\r\n"
     response += "Content-Length: {}\r\n".format(len(body.encode("utf8")))
     if "cookie" not in headers:
-        response += f"Set-Cookie: token={token}\r\n"
+        response += f"Set-Cookie: token={token}; SameSite=Lax\r\n"
     response += "\r\n" + body
     conx.send(response.encode("utf8"))
     conx.close()

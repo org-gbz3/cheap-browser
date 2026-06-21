@@ -33,7 +33,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-COOKIE_JAR: dict[str, str] = {}
+COOKIE_JAR: dict[str, tuple[str, dict[str, str]]] = {}
 
 
 class URL:
@@ -55,7 +55,7 @@ class URL:
             self.host, port = self.host.split(":", 1)
             self.port = int(port)
 
-    def request(self, payload: str | None = None):
+    def request(self, referrer: URL | None, payload: str | None = None):
         s = socket.socket(
             family=socket.AF_INET,
             type=socket.SOCK_STREAM,
@@ -78,8 +78,13 @@ class URL:
             length = len(payload.encode("utf8"))
             request += f"Content-Length: {length}\r\n"
         if self.host in COOKIE_JAR:
-            cookie = COOKIE_JAR[self.host]
-            request += f"Cookie: {cookie}\r\n"
+            cookie, params = COOKIE_JAR[self.host]
+            allow_cookie = True
+            if referrer and params.get("samesite", "none") == "lax":
+                if method != "GET":
+                    allow_cookie = self.host == referrer.host
+            if allow_cookie:
+                request += f"Cookie: {cookie}\r\n"
         request += "\r\n"
         if payload:
             request += payload
@@ -103,7 +108,16 @@ class URL:
 
         if "set-cookie" in response_headers:
             cookie = response_headers["set-cookie"]
-            COOKIE_JAR[self.host] = cookie
+            params: dict[str, str] = {}
+            if ";" in cookie:
+                cookie, rest = cookie.split(";", 1)
+                for param in rest.split(";"):
+                    if "=" in param:
+                        param, value = param.split("=", 1)
+                    else:
+                        value = "true"
+                    params[param.strip().casefold()] = value.casefold()
+            COOKIE_JAR[self.host] = (cookie, params)
         content = response.read()
         s.close()
 
@@ -1077,10 +1091,12 @@ class JSContext:
         self.tab.render()
 
     def XMLHttpRequest_send(self, method: str, url: str, body: str):
+        if self.tab.url is None:
+            return ""
         full_url = self.tab.url.resolve(url)
         if full_url.origin() != self.tab.url.origin():
             raise Exception("Cross-origin XHR request not allowed")
-        _, out = full_url.request(body)
+        out = full_url.request(self.tab.url, body)
         return out
 
 
@@ -1097,6 +1113,7 @@ class Tab:
         self.tab_height = tab_height
         self.history: list[URL] = []
         self.focus: Element | None = None
+        self.url: URL | None = None
 
     def draw(self, canvas: tkinter.Canvas, offset: int):
         for cmd in self.display_list:
@@ -1108,10 +1125,10 @@ class Tab:
 
     def load(self, url: URL, payload: str | None = None):
         self.history.append(url)
+        body = url.request(self.url, payload)
         self.url = url
 
         logging.info(f"loading [{url}]")
-        body = url.request(payload)
         self.nodes = HTMLParser(body).parse()
         if self.html_tree:
             print_html_tree(self.nodes)
@@ -1126,7 +1143,7 @@ class Tab:
             script_url = url.resolve(script)
             logging.info(f"script found. [{script_url}]")
             try:
-                body = script_url.request()
+                body = script_url.request(url)
                 self.js.run(script, body)
             except Exception:
                 continue
@@ -1145,7 +1162,7 @@ class Tab:
             style_url = url.resolve(link)
             logging.info(f"css found. [{style_url}]")
             try:
-                body = style_url.request()
+                body = style_url.request(url)
             except Exception:
                 continue
             self.rules.extend(CSSParser(body).parse())
@@ -1202,6 +1219,7 @@ class Tab:
             elif elt.tag == "a" and "href" in elt.attributes:
                 if self.js.dispatch_event("click", elt):
                     return
+                assert self.url
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
             elif elt.tag == "input":
@@ -1250,6 +1268,7 @@ class Tab:
             name = urllib.parse.quote(name)
             body += f"&{name}={value}"
         body = body[1:]
+        assert self.url
         url = self.url.resolve(elt.attributes["action"])
         self.load(url, body)
 
