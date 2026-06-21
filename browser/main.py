@@ -33,6 +33,8 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
+COOKIE_JAR: dict[str, tuple[str, dict[str, str]]] = {}
+
 
 class URL:
     def __init__(self, url: str, skip_ssl_verify: bool) -> None:
@@ -53,7 +55,7 @@ class URL:
             self.host, port = self.host.split(":", 1)
             self.port = int(port)
 
-    def request(self, payload: str | None = None):
+    def request(self, referrer: URL | None, payload: str | None = None):
         s = socket.socket(
             family=socket.AF_INET,
             type=socket.SOCK_STREAM,
@@ -75,6 +77,14 @@ class URL:
         if payload:
             length = len(payload.encode("utf8"))
             request += f"Content-Length: {length}\r\n"
+        if self.host in COOKIE_JAR:
+            cookie, params = COOKIE_JAR[self.host]
+            allow_cookie = True
+            if referrer and params.get("samesite", "none") == "lax":
+                if method != "GET":
+                    allow_cookie = self.host == referrer.host
+            if allow_cookie:
+                request += f"Cookie: {cookie}\r\n"
         request += "\r\n"
         if payload:
             request += payload
@@ -85,7 +95,7 @@ class URL:
         version, status, explanation = statusline.split(" ", 2)
         print(f"ver={version} stat={status} exp={explanation}")
 
-        response_headers = {}
+        response_headers: dict[str, str] = {}
         while True:
             line = response.readline()
             if line == "\r\n":
@@ -96,10 +106,22 @@ class URL:
         assert "transfer-encoding" not in response_headers
         assert "content-encoding" not in response_headers
 
+        if "set-cookie" in response_headers:
+            cookie = response_headers["set-cookie"]
+            params: dict[str, str] = {}
+            if ";" in cookie:
+                cookie, rest = cookie.split(";", 1)
+                for param in rest.split(";"):
+                    if "=" in param:
+                        param, value = param.split("=", 1)
+                    else:
+                        value = "true"
+                    params[param.strip().casefold()] = value.casefold()
+            COOKIE_JAR[self.host] = (cookie, params)
         content = response.read()
         s.close()
 
-        return content
+        return response_headers, content
 
     def resolve(self, url: str):
         if "://" in url:
@@ -117,6 +139,9 @@ class URL:
             return URL(
                 self.scheme + "://" + self.host + ":" + str(self.port) + url, self.skip_ssl_verify
             )
+
+    def origin(self):
+        return f"{self.scheme}://{self.host}:{str(self.port)}"
 
     def __repr__(self) -> str:
         return f"{self.scheme}://{self.host}:{self.port}{self.path}"
@@ -1019,6 +1044,7 @@ class JSContext:
         self.interp.export_function("querySelectorAll", self.querySelectorAll)  # type: ignore[attr-defined]
         self.interp.export_function("getAttribute", self.getAttribute)  # type: ignore[attr-defined]
         self.interp.export_function("innerHTML_set", self.innerHTML_set)  # type: ignore[attr-defined]
+        self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)  # type: ignore[attr-defined]
         self.node_to_handle: dict[Element, int] = {}
         self.handle_to_node: dict[int, Element] = {}
 
@@ -1064,6 +1090,17 @@ class JSContext:
             child.parent = elt
         self.tab.render()
 
+    def XMLHttpRequest_send(self, method: str, url: str, body: str):
+        if self.tab.url is None:
+            return ""
+        full_url = self.tab.url.resolve(url)
+        if not self.tab.allowed_request(full_url):
+            raise Exception("Cross-origin XHR blocked by CSP")
+        if full_url.origin() != self.tab.url.origin():
+            raise Exception("Cross-origin XHR request not allowed")
+        _, out = full_url.request(self.tab.url, body)
+        return out
+
 
 SCROLL_STEP = 100
 
@@ -1078,6 +1115,7 @@ class Tab:
         self.tab_height = tab_height
         self.history: list[URL] = []
         self.focus: Element | None = None
+        self.url: URL | None = None
 
     def draw(self, canvas: tkinter.Canvas, offset: int):
         for cmd in self.display_list:
@@ -1087,15 +1125,26 @@ class Tab:
                 continue
             cmd.execute(self.scroll - offset, canvas)
 
+    def allowed_request(self, url: URL):
+        return self.allowed_origins is None or url.origin() in self.allowed_origins
+
     def load(self, url: URL, payload: str | None = None):
         self.history.append(url)
+        headers, body = url.request(self.url, payload)
         self.url = url
 
         logging.info(f"loading [{url}]")
-        body = url.request(payload)
         self.nodes = HTMLParser(body).parse()
         if self.html_tree:
             print_html_tree(self.nodes)
+
+        self.allowed_origins: list[str] | None = None
+        if "content-security-policy" in headers:
+            csp = headers["content-security-policy"].split()
+            if len(csp) > 0 and csp[0] == "default-src":
+                self.allowed_origins = []
+                for origin in csp[1:]:
+                    self.allowed_origins.append(URL(origin, url.skip_ssl_verify).origin())
 
         scripts = [
             node.attributes["src"]
@@ -1105,9 +1154,12 @@ class Tab:
         self.js = JSContext(self)
         for script in scripts:
             script_url = url.resolve(script)
+            if not self.allowed_request(script_url):
+                logging.error(f"Blocked script {script_url} due to CSP")
+                continue
             logging.info(f"script found. [{script_url}]")
             try:
-                body = script_url.request()
+                _, body = script_url.request(url)
                 self.js.run(script, body)
             except Exception:
                 continue
@@ -1124,9 +1176,12 @@ class Tab:
         ]
         for link in links:
             style_url = url.resolve(link)
+            if not self.allowed_request(style_url):
+                logging.error(f"Blocked stylesheet {style_url} due to CSP")
+                continue
             logging.info(f"css found. [{style_url}]")
             try:
-                body = style_url.request()
+                _, body = style_url.request(url)
             except Exception:
                 continue
             self.rules.extend(CSSParser(body).parse())
@@ -1183,6 +1238,7 @@ class Tab:
             elif elt.tag == "a" and "href" in elt.attributes:
                 if self.js.dispatch_event("click", elt):
                     return
+                assert self.url
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
             elif elt.tag == "input":
@@ -1231,6 +1287,7 @@ class Tab:
             name = urllib.parse.quote(name)
             body += f"&{name}={value}"
         body = body[1:]
+        assert self.url
         url = self.url.resolve(elt.attributes["action"])
         self.load(url, body)
 
