@@ -126,6 +126,9 @@ class URL:
                 self.scheme + "://" + self.host + ":" + str(self.port) + url, self.skip_ssl_verify
             )
 
+    def origin(self):
+        return f"{self.scheme}://{self.host}:{str(self.port)}"
+
     def __repr__(self) -> str:
         return f"{self.scheme}://{self.host}:{self.port}{self.path}"
 
@@ -1075,6 +1078,8 @@ class JSContext:
 
     def XMLHttpRequest_send(self, method: str, url: str, body: str):
         full_url = self.tab.url.resolve(url)
+        if full_url.origin() != self.tab.url.origin():
+            raise Exception("Cross-origin XHR request not allowed")
         _, out = full_url.request(body)
         return out
 
