@@ -13,6 +13,7 @@ typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
 stubPath = "typings"
+exclude = ["typings", "**/node_modules", "**/__pycache__", "**/.*", ".venv"]
 reportMissingTypeStubs = "warning"
 reportUnknownArgumentType = "error"
 reportUnknownLambdaType = "error"

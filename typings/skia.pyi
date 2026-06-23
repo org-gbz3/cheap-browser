@@ -127,6 +127,7 @@ class Surface:
 
 ColorBLACK: int
 ColorWHITE: int
+ColorTRANSPARENT: int
 kRGBA_8888_ColorType: ColorType
 kUnpremul_AlphaType: AlphaType
 

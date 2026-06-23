@@ -506,6 +506,7 @@ def linespace(font: skia.Font):
 NAMED_COLORS = {
     "black": "#000000",
     "white": "#ffffff",
+    "gray": "#808080",
     "red": "#ff0000",
     "green": "#00ff00",
     "blue": "#0000ff",
@@ -522,10 +523,16 @@ def parse_color(color: str) -> int:
         g = int(color[3:5], 16)
         b = int(color[5:7], 16)
         return skia.Color(r, g, b)
+    elif color.startswith("#") and len(color) == 4:
+        r = int(color[1] * 2, 16)
+        g = int(color[2] * 2, 16)
+        b = int(color[3] * 2, 16)
+        return skia.Color(r, g, b)
     elif color in NAMED_COLORS:
         return parse_color(NAMED_COLORS[color])
     else:
-        return skia.ColorBLACK
+        logging.debug(f"parse_color: unsupported color '{color}'")
+        return skia.ColorTRANSPARENT
 
 
 DEFAULT_STYLE_SHEET = CSSParser(open("browser/browser.css").read()).parse()
@@ -792,6 +799,11 @@ class BlockLayout:
 
     def paint(self):
         cmds: list[DrawItem] = []
+
+        if isinstance(self.node, Element) and self.node.tag == "pre":
+            x2, y2 = self.x + self.width, self.y + self.height
+            rect = DrawRect(skia.Rect.MakeLTRB(self.x, self.y, x2, y2), "gray")
+            cmds.append(rect)
 
         if self.node.style:
             bgcolor = self.node.style.get("background-color", "transparent")
