@@ -17,7 +17,7 @@ import sdl2
 import skia
 
 type DisplayItem = tuple[int, int, str, skia.Typeface, str]
-type DrawItem = DrawText | DrawRect | DrawRRect | DrawOutline | DrawLine
+type DrawItem = DrawText | DrawRect | DrawRRect | DrawOutline | DrawLine | DrawText | Opacity
 type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
 type Node = Element | Text
 type Layout = DocumentLayout | BlockLayout | LineLayout | InputLayout | TextLayout
@@ -665,6 +665,9 @@ class DocumentLayout:
     def should_paint(self):
         return True
 
+    def paint_effects(self, cmds: list[DrawItem]):
+        return cmds
+
     def __repr__(self) -> str:
         return repr(self.node)
 
@@ -853,6 +856,15 @@ class BlockLayout:
             self.node.tag != "input" and self.node.tag != "button"
         )
 
+    def paint_effects(self, cmds: list[DrawItem]):
+        cmds = paint_visual_effects(self.node, cmds, self.self_rect())
+        return cmds
+
+
+def paint_visual_effects(node: Node, cmds: list[DrawItem], rect: skia.Rect) -> list[DrawItem]:
+    opacity = float(node.style.get("opacity", "1.0"))
+    return [Opacity(opacity, cmds)]
+
 
 class LineLayout:
     def __init__(self, node: Node, parent: BlockLayout, previous: LineLayout | None):
@@ -879,8 +891,11 @@ class LineLayout:
         max_descent = max([word.font.getMetrics().fDescent for word in self.children], default=0)
         self.height = int(1.25 * (max_ascent + max_descent))
 
-    def paint(self) -> list[DrawText]:
+    def paint(self) -> list[DrawItem]:
         return []
+
+    def paint_effects(self, cmds: list[DrawItem]):
+        return cmds
 
     def should_paint(self):
         return True
@@ -920,9 +935,12 @@ class TextLayout:
 
         self.height = linespace(self.font)
 
-    def paint(self):
+    def paint(self) -> list[DrawItem]:
         color = self.node.style["color"]
         return [DrawText(self.x, self.y, self.word, self.font, color)]
+
+    def paint_effects(self, cmds: list[DrawItem]):
+        return cmds
 
     def should_paint(self):
         return True
@@ -992,6 +1010,9 @@ class InputLayout:
 
         color = self.node.style["color"]
         cmds.append(DrawText(self.x, self.y, text, self.font, color))
+        return cmds
+
+    def paint_effects(self, cmds: list[DrawItem]):
         return cmds
 
     def should_paint(self):
@@ -1071,11 +1092,32 @@ class DrawLine:
         canvas.drawPath(path, paint)
 
 
+class Opacity:
+    def __init__(self, opacity: float, children: list[DrawItem]):
+        self.opacity = opacity
+        self.children = children
+        self.rect = skia.Rect.MakeEmpty()
+        for cmd in self.children:
+            self.rect.join(cmd.rect)
+
+    def execute(self, canvas: skia.Canvas):
+        paint = skia.Paint(Alphaf=self.opacity)
+        canvas.saveLayer(None, paint)
+        for cmd in self.children:
+            cmd.execute(canvas)
+        canvas.restore()
+
+
 def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
+    cmds: list[DrawItem] = []
     if layout_object.should_paint():
-        display_list.extend(layout_object.paint())
+        cmds = layout_object.paint()
     for child in layout_object.children:
-        paint_tree(child, display_list)
+        paint_tree(child, cmds)
+
+    if layout_object.should_paint():
+        cmds = layout_object.paint_effects(cmds)
+    display_list.extend(cmds)
 
 
 EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(new Event(dukpy.type))"
