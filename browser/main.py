@@ -549,6 +549,8 @@ def parse_blend_mode(blend_mode_str: str | None):
         return skia.BlendMode.kMultiply
     elif blend_mode_str == "difference":
         return skia.BlendMode.kDifference
+    elif blend_mode_str == "destination-in":
+        return skia.BlendMode.kDstIn
     else:
         return skia.BlendMode.kSrcOver
 
@@ -875,6 +877,10 @@ class BlockLayout:
 def paint_visual_effects(node: Node, cmds: list[DrawItem], rect: skia.Rect) -> list[DrawItem]:
     opacity = float(node.style.get("opacity", "1.0"))
     blend_mode = node.style.get("mix-blend-mode")
+    if node.style.get("overflow", "visible") == "clip":
+        border_radius = float(node.style.get("border-radius", "0px")[:-2])
+        cmds.append(Blend("destination-in", [DrawRRect(rect, border_radius, "white")]))
+
     return [Blend(blend_mode, [Opacity(opacity, cmds)])]
 
 
