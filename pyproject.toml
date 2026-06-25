@@ -4,11 +4,16 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = ["dukpy"]
 
+[tool.setuptools.packages.find]
+include = ["browser*"]
+
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+stubPath = "typings"
+exclude = ["typings", "**/node_modules", "**/__pycache__", "**/.*", ".venv"]
 reportMissingTypeStubs = "warning"
 reportUnknownArgumentType = "error"
 reportUnknownLambdaType = "error"
