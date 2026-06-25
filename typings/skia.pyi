@@ -57,6 +57,37 @@ class ClipOp:
     kDifference: ClipOp
     kIntersect: ClipOp
 
+class BlendMode:
+    kClear: BlendMode
+    kSrc: BlendMode
+    kDst: BlendMode
+    kSrcOver: BlendMode
+    kDstOver: BlendMode
+    kSrcIn: BlendMode
+    kDstIn: BlendMode
+    kSrcOut: BlendMode
+    kDstOut: BlendMode
+    kSrcATop: BlendMode
+    kDstATop: BlendMode
+    kXor: BlendMode
+    kPlus: BlendMode
+    kModulate: BlendMode
+    kScreen: BlendMode
+    kOverlay: BlendMode
+    kDarken: BlendMode
+    kLighten: BlendMode
+    kColorDodge: BlendMode
+    kColorBurn: BlendMode
+    kHardLight: BlendMode
+    kSoftLight: BlendMode
+    kDifference: BlendMode
+    kExclusion: BlendMode
+    kMultiply: BlendMode
+    kHue: BlendMode
+    kSaturation: BlendMode
+    kColor: BlendMode
+    kLuminosity: BlendMode
+
 class Rect:
     @staticmethod
     def MakeEmpty() -> Rect: ...

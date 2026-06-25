@@ -17,7 +17,9 @@ import sdl2
 import skia
 
 type DisplayItem = tuple[int, int, str, skia.Typeface, str]
-type DrawItem = DrawText | DrawRect | DrawRRect | DrawOutline | DrawLine | DrawText | Opacity
+type DrawItem = (
+    DrawText | DrawRect | DrawRRect | DrawOutline | DrawLine | DrawText | Opacity | Blend
+)
 type CssRule = tuple[TagSelector | DescendantSelector, dict[str, str]]
 type Node = Element | Text
 type Layout = DocumentLayout | BlockLayout | LineLayout | InputLayout | TextLayout
@@ -542,6 +544,15 @@ def parse_color(color: str) -> int:
         return skia.ColorTRANSPARENT
 
 
+def parse_blend_mode(blend_mode_str: str | None):
+    if blend_mode_str == "multiply":
+        return skia.BlendMode.kMultiply
+    elif blend_mode_str == "difference":
+        return skia.BlendMode.kDifference
+    else:
+        return skia.BlendMode.kSrcOver
+
+
 DEFAULT_STYLE_SHEET = CSSParser(open("browser/browser.css").read()).parse()
 INHERITED_PROPERTIES = {
     "font-size": "16px",
@@ -863,7 +874,8 @@ class BlockLayout:
 
 def paint_visual_effects(node: Node, cmds: list[DrawItem], rect: skia.Rect) -> list[DrawItem]:
     opacity = float(node.style.get("opacity", "1.0"))
-    return [Opacity(opacity, cmds)]
+    blend_mode = node.style.get("mix-blend-mode")
+    return [Blend(blend_mode, [Opacity(opacity, cmds)])]
 
 
 class LineLayout:
@@ -1102,6 +1114,23 @@ class Opacity:
 
     def execute(self, canvas: skia.Canvas):
         paint = skia.Paint(Alphaf=self.opacity)
+        canvas.saveLayer(None, paint)
+        for cmd in self.children:
+            cmd.execute(canvas)
+        canvas.restore()
+
+
+class Blend:
+    def __init__(self, blend_mode: str | None, children: list[DrawItem]):
+        self.blend_mode = blend_mode
+
+        self.children = children
+        self.rect = skia.Rect.MakeEmpty()
+        for cmd in self.children:
+            self.rect.join(cmd.rect)
+
+    def execute(self, canvas: skia.Canvas):
+        paint = skia.Paint(BlendMode=parse_blend_mode(self.blend_mode))
         canvas.saveLayer(None, paint)
         for cmd in self.children:
             cmd.execute(canvas)
