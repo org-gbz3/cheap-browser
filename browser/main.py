@@ -1187,6 +1187,7 @@ def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
 EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(new Event(dukpy.type))"
 RUNTIME_JS = open("browser/runtime.js").read()
 SETTIMEOUT_JS = "__runSetTimeout(dukpy.handle)"
+XHR_ONLOAD_JS = "__runXHROnload(dukpy.out, dukpy.handle)"
 
 
 class JSContext:
@@ -1246,16 +1247,29 @@ class JSContext:
             child.parent = elt
         self.tab.render()
 
-    def XMLHttpRequest_send(self, method: str, url: str, body: str):
-        if self.tab.url is None:
-            return ""
+    def XMLHttpRequest_send(self, method: str, url: str, body: str, isasync: bool, handle: int):
+        assert self.tab.url
         full_url = self.tab.url.resolve(url)
         if not self.tab.allowed_request(full_url):
             raise Exception("Cross-origin XHR blocked by CSP")
         if full_url.origin() != self.tab.url.origin():
             raise Exception("Cross-origin XHR request not allowed")
-        _, out = full_url.request(self.tab.url, body)
-        return out
+
+        def run_load():
+            _, out = full_url.request(self.tab.url, body)
+            task = Task(self.dispatch_xhr_onload, (out, handle))
+            self.tab.task_runner.schedule_task(task)
+            return out
+
+        if not isasync:
+            return run_load()
+        else:
+            threading.Thread(target=run_load).start()
+
+    def dispatch_xhr_onload(self, out: str, handle: int):
+        if self.discarded:
+            return
+        self.interp.evaljs(XHR_ONLOAD_JS, out=out, handle=handle)
 
     def dispatch_settimeout(self, handle: int):
         if self.discarded:
