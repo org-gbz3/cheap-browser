@@ -7,13 +7,14 @@ import math
 import socket
 import ssl
 import sys
+import threading
 import urllib.parse
 from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-import dukpy  # type: ignore[import-untyped]
+import dukpy
 import sdl2
 import skia
 
@@ -571,14 +572,24 @@ class TaskRunner:
     def __init__(self, tab: Tab):
         self.tab = tab
         self.tasks: list[Task] = []
+        self.condition = threading.Condition()
 
     def schedule_task(self, task: Task):
-        self.tasks.append(task)
+        with self.condition:
+            self.tasks.append(task)
+            self.condition.notify_all()
 
     def run(self):
-        if len(self.tasks) > 0:
-            task = self.tasks.pop(0)
+        task = None
+        with self.condition:
+            if len(self.tasks) > 0:
+                task = self.tasks.pop(0)
+        if task:
             task.run()
+
+        with self.condition:
+            if len(self.tasks) == 0:
+                self.condition.wait()
 
 
 DEFAULT_STYLE_SHEET = CSSParser(open("browser/browser.css").read()).parse()
@@ -1175,26 +1186,29 @@ def paint_tree(layout_object: Layout, display_list: list[DrawItem]):
 
 EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(new Event(dukpy.type))"
 RUNTIME_JS = open("browser/runtime.js").read()
+SETTIMEOUT_JS = "__runSetTimeout(dukpy.handle)"
 
 
 class JSContext:
     def __init__(self, tab: Tab):
         self.tab = tab
         self.interp = dukpy.JSInterpreter()
-        self.interp.evaljs(RUNTIME_JS)  # type: ignore[attr-defined]
-        self.interp.export_function("log", print)  # type: ignore[attr-defined]
-        self.interp.export_function("querySelectorAll", self.querySelectorAll)  # type: ignore[attr-defined]
-        self.interp.export_function("getAttribute", self.getAttribute)  # type: ignore[attr-defined]
-        self.interp.export_function("innerHTML_set", self.innerHTML_set)  # type: ignore[attr-defined]
-        self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)  # type: ignore[attr-defined]
+        self.interp.evaljs(RUNTIME_JS)
+        self.interp.export_function("log", print)
+        self.interp.export_function("querySelectorAll", self.querySelectorAll)
+        self.interp.export_function("getAttribute", self.getAttribute)
+        self.interp.export_function("innerHTML_set", self.innerHTML_set)
+        self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)
+        self.interp.export_function("setTimeout", self.setTimeout)
         self.node_to_handle: dict[Element, int] = {}
         self.handle_to_node: dict[int, Element] = {}
+        self.discarded = False
 
     def run(self, script: str, code: str):
         try:
-            self.interp.evaljs(code)  # type: ignore[attr-defined]
-        except dukpy.JSRuntimeError as e:  # type: ignore[attr-defined]
-            print(f"Script {script} crashed.", e)  # type: ignore[reportUnknownArgumentType]
+            self.interp.evaljs(code)
+        except dukpy.JSRuntimeError as e:
+            print(f"Script {script} crashed.", e)
 
     def querySelectorAll(self, selector_text: str):
         selector = CSSParser(selector_text).selector()
@@ -1243,6 +1257,18 @@ class JSContext:
         _, out = full_url.request(self.tab.url, body)
         return out
 
+    def dispatch_settimeout(self, handle: int):
+        if self.discarded:
+            return
+        self.interp.evaljs(SETTIMEOUT_JS, handle=handle)
+
+    def setTimeout(self, handle: int, time: int):
+        def run_callback():
+            task = Task(self.dispatch_settimeout, (handle,))
+            self.tab.task_runner.schedule_task(task)
+
+        threading.Timer(time / 1000.0, run_callback).start()
+
 
 SCROLL_STEP = 100
 
@@ -1259,6 +1285,7 @@ class Tab:
         self.focus: Element | None = None
         self.url: URL | None = None
         self.task_runner = TaskRunner(self)
+        self.js: JSContext | None = None
 
     def raster(self, canvas: skia.Canvas):
         for cmd in self.display_list:
@@ -1290,6 +1317,8 @@ class Tab:
             for node in node_tree_to_list(self.nodes, [])
             if isinstance(node, Element) and node.tag == "script" and "src" in node.attributes
         ]
+        if self.js:
+            self.js.discarded = True
         self.js = JSContext(self)
         for script in scripts:
             script_url = url.resolve(script)
@@ -1375,12 +1404,14 @@ class Tab:
             if isinstance(elt, Text):
                 pass
             elif elt.tag == "a" and "href" in elt.attributes:
+                assert self.js
                 if self.js.dispatch_event("click", elt):
                     return
                 assert self.url
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
             elif elt.tag == "input":
+                assert self.js
                 if self.js.dispatch_event("click", elt):
                     return
                 elt.attributes["value"] = ""
@@ -1390,6 +1421,7 @@ class Tab:
                 elt.is_focused = True
                 return self.render()
             elif elt.tag == "button":
+                assert self.js
                 if self.js.dispatch_event("click", elt):
                     return
                 while elt:
@@ -1406,12 +1438,14 @@ class Tab:
 
     def keypress(self, char: str):
         if self.focus:
+            assert self.js
             if self.js.dispatch_event("keydown", self.focus):
                 return
             self.focus.attributes["value"] += char
             self.render()
 
     def submit_form(self, elt: Element):
+        assert self.js
         if self.js.dispatch_event("submit", elt):
             return
         inputs = [
