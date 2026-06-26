@@ -8,6 +8,7 @@ import socket
 import ssl
 import sys
 import urllib.parse
+from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -553,6 +554,31 @@ def parse_blend_mode(blend_mode_str: str | None):
         return skia.BlendMode.kSrcOver
     else:
         return skia.BlendMode.kSrcOver
+
+
+class Task:
+    def __init__(self, task_code: Callable[..., None], args: tuple[object, ...]):
+        self.task_code = task_code
+        self.args = args
+
+    def run(self):
+        self.task_code(*self.args)
+        del self.task_code
+        del self.args
+
+
+class TaskRunner:
+    def __init__(self, tab: Tab):
+        self.tab = tab
+        self.tasks: list[Task] = []
+
+    def schedule_task(self, task: Task):
+        self.tasks.append(task)
+
+    def run(self):
+        if len(self.tasks) > 0:
+            task = self.tasks.pop(0)
+            task.run()
 
 
 DEFAULT_STYLE_SHEET = CSSParser(open("browser/browser.css").read()).parse()
@@ -1166,7 +1192,7 @@ class JSContext:
 
     def run(self, script: str, code: str):
         try:
-            return self.interp.evaljs(code)  # type: ignore[attr-defined]
+            self.interp.evaljs(code)  # type: ignore[attr-defined]
         except dukpy.JSRuntimeError as e:  # type: ignore[attr-defined]
             print(f"Script {script} crashed.", e)  # type: ignore[reportUnknownArgumentType]
 
@@ -1232,6 +1258,7 @@ class Tab:
         self.history: list[URL] = []
         self.focus: Element | None = None
         self.url: URL | None = None
+        self.task_runner = TaskRunner(self)
 
     def raster(self, canvas: skia.Canvas):
         for cmd in self.display_list:
@@ -1272,10 +1299,10 @@ class Tab:
             logging.info(f"script found. [{script_url}]")
             try:
                 _, body = script_url.request(url)
-                self.js.run(script, body)
             except Exception:
                 continue
-            # print(f"Script returned: {dukpy.evaljs(body)}")  # type: ignore[attr-defined]
+            task = Task(self.js.run, (script_url, body))
+            self.task_runner.schedule_task(task)
 
         self.rules = DEFAULT_STYLE_SHEET.copy()
         links = [
@@ -1713,6 +1740,7 @@ def mainloop(browser: Browser):
                     browser.handle_up()
             elif event.type == sdl2.SDL_TEXTINPUT:
                 browser.handle_key(event.text.text.decode("utf8"))
+        browser.active_tab.task_runner.run()
 
 
 def parse_args():
