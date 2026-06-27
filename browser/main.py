@@ -592,7 +592,8 @@ class TaskRunner:
 
         with self.condition:
             if len(self.tasks) == 0:
-                self.condition.wait()
+                pass
+                # TODO self.condition.wait()
 
 
 DEFAULT_STYLE_SHEET = CSSParser(open("browser/browser.css").read()).parse()
@@ -1204,6 +1205,7 @@ class JSContext:
         self.interp.export_function("innerHTML_set", self.innerHTML_set)
         self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)
         self.interp.export_function("setTimeout", self.setTimeout)
+        self.interp.export_function("requestAnimationFrame", self.requestAnimationFrame)
         self.node_to_handle: dict[Element, int] = {}
         self.handle_to_node: dict[int, Element] = {}
         self.discarded = False
@@ -1285,6 +1287,9 @@ class JSContext:
             self.tab.task_runner.schedule_task(task)
 
         threading.Timer(time / 1000.0, run_callback).start()
+
+    def requestAnimationFrame(self):
+        self.tab.browser.set_needs_animation_frame(self.tab)
 
 
 SCROLL_STEP = 100
@@ -1377,6 +1382,8 @@ class Tab:
         self.set_needs_render()
 
     def render(self):
+        assert self.js
+        self.js.interp.evaljs("__runRAFHandlers()")
         if not self.needs_render:
             return
         style(self.nodes, sorted(self.rules, key=cascade_priority))
@@ -1493,6 +1500,7 @@ class Tab:
 
     def set_needs_render(self):
         self.needs_render = True
+        self.browser.set_needs_animation_frame(self)
 
 
 class Chrome:
@@ -1644,6 +1652,7 @@ class Chrome:
 
 class Browser:
     def __init__(self, html_tree: bool, layout_tree: bool, skip_ssl_verify: bool):
+        self.animation_timer = None
         self.tabs: list[Tab] = []
         self.active_tab: Tab
         self.sdl_window = sdl2.SDL_CreateWindow(
@@ -1677,6 +1686,7 @@ class Browser:
         self.chrome_surface = skia.Surface(WIDTH, math.ceil(self.chrome.bottom))
         self.tab_surface: skia.Surface | None = None
         self.needs_raster_and_draw = False
+        self.needs_animation_frame = True
 
     def handle_down(self):
         self.active_tab.scrolldown()
@@ -1789,8 +1799,8 @@ class Browser:
     def new_tab(self, url: URL, html_tree: bool, layout_tree: bool):
         canvas = self.root_surface.getCanvas()
         new_tab = Tab(self, HEIGHT - self.chrome.bottom, html_tree, layout_tree)
-        new_tab.load(url)
         self.active_tab = new_tab
+        new_tab.load(url)
         self.tabs.append(new_tab)
         new_tab.render()
         self.raster_and_draw()
@@ -1799,11 +1809,19 @@ class Browser:
 
     def schedule_animation_frame(self):
         def callback():
+            self.needs_animation_frame = False
+            self.animation_timer = None
             active_tab = self.active_tab
             task = Task(active_tab.render, ())
             active_tab.task_runner.schedule_task(task)
 
-        threading.Timer(REFRESH_RATE_SEC, callback).start()
+        if self.needs_animation_frame and not self.animation_timer:
+            self.animation_timer = threading.Timer(REFRESH_RATE_SEC, callback)
+            self.animation_timer.start()
+
+    def set_needs_animation_frame(self, tab: Tab):
+        if tab == self.active_tab:
+            self.needs_animation_frame = True
 
 
 def mainloop(browser: Browser):
