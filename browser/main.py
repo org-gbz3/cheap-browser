@@ -1248,7 +1248,7 @@ class JSContext:
         elt.children = new_nodes
         for child in elt.children:
             child.parent = elt
-        self.tab.render()
+        self.tab.set_needs_render()
 
     def XMLHttpRequest_send(self, method: str, url: str, body: str, isasync: bool, handle: int):
         assert self.tab.url
@@ -1291,7 +1291,9 @@ SCROLL_STEP = 100
 
 
 class Tab:
-    def __init__(self, tab_height: int, html_tree: bool, layout_tree: bool) -> None:
+    def __init__(
+        self, browser: Browser, tab_height: int, html_tree: bool, layout_tree: bool
+    ) -> None:
         self.html_tree = html_tree
         self.layout_tree = layout_tree
         self.width = WIDTH
@@ -1303,6 +1305,8 @@ class Tab:
         self.url: URL | None = None
         self.task_runner = TaskRunner(self)
         self.js: JSContext | None = None
+        self.needs_render = False
+        self.browser = browser
 
     def raster(self, canvas: skia.Canvas):
         for cmd in self.display_list:
@@ -1370,9 +1374,11 @@ class Tab:
             except Exception:
                 continue
             self.rules.extend(CSSParser(body).parse())
-        self.render()
+        self.set_needs_render()
 
     def render(self):
+        if not self.needs_render:
+            return
         style(self.nodes, sorted(self.rules, key=cascade_priority))
 
         self.document = DocumentLayout(self.nodes)
@@ -1382,6 +1388,8 @@ class Tab:
 
         self.display_list: list[DrawItem] = []
         paint_tree(self.document, self.display_list)
+        self.needs_render = False
+        self.browser.set_needs_raster_and_draw()
 
     def scrolldown(self):
         max_y = max(self.document.height + 2 * VSTEP - self.tab_height, 0)
@@ -1402,6 +1410,7 @@ class Tab:
 
     def click(self, x: int, y: int):
         logging.info(f"clicked. x={x} y={y}")
+        self.render()
         self.focus = None
         y += self.scroll
         objs = [
@@ -1436,7 +1445,8 @@ class Tab:
                     self.focus.is_focused = False
                 self.focus = elt
                 elt.is_focused = True
-                return self.render()
+                self.set_needs_render()
+                return
             elif elt.tag == "button":
                 assert self.js
                 if self.js.dispatch_event("click", elt):
@@ -1459,7 +1469,7 @@ class Tab:
             if self.js.dispatch_event("keydown", self.focus):
                 return
             self.focus.attributes["value"] += char
-            self.render()
+            self.set_needs_render()
 
     def submit_form(self, elt: Element):
         assert self.js
@@ -1480,6 +1490,9 @@ class Tab:
         assert self.url
         url = self.url.resolve(elt.attributes["action"])
         self.load(url, body)
+
+    def set_needs_render(self):
+        self.needs_render = True
 
 
 class Chrome:
@@ -1622,6 +1635,8 @@ class Chrome:
         if self.focus == "address bar":
             self.browser.active_tab.load(URL(self.address_bar, self.browser.skip_ssl_verify))
             self.focus = None
+            return True
+        return False
 
     def blur(self):
         self.focus = None
@@ -1661,6 +1676,7 @@ class Browser:
 
         self.chrome_surface = skia.Surface(WIDTH, math.ceil(self.chrome.bottom))
         self.tab_surface: skia.Surface | None = None
+        self.needs_raster_and_draw = False
 
     def handle_down(self):
         self.active_tab.scrolldown()
@@ -1674,7 +1690,7 @@ class Browser:
         if e.y < self.chrome.bottom:
             self.focus = None
             self.chrome.click(e.x, e.y)
-            self.raster_chrome()
+            self.set_needs_raster_and_draw()
         else:
             self.focus = "content"
             self.chrome.blur()
@@ -1691,14 +1707,14 @@ class Browser:
         if not (0x20 <= ord(e.char) < 0x7F):
             return
         if self.chrome.keypress(e.char):
-            self.draw()
+            self.set_needs_raster_and_draw()
         elif self.focus == "content":
             self.active_tab.keypress(e.char)
             self.draw()
 
     def handle_enter(self):
-        self.chrome.enter()
-        self.draw()
+        if self.chrome.enter():
+            self.set_needs_raster_and_draw()
 
     def handle_quit(self):
         sdl2.SDL_DestroyWindow(self.sdl_window)
@@ -1759,17 +1775,24 @@ class Browser:
         sdl2.SDL_BlitSurface(sdl_surface, rect, window_surface, rect)
         sdl2.SDL_UpdateWindowSurface(self.sdl_window)
 
+    def set_needs_raster_and_draw(self):
+        self.needs_raster_and_draw = True
+
     def raster_and_draw(self):
+        if not self.needs_raster_and_draw:
+            return
         self.raster_chrome()
         self.raster_tab()
         self.draw()
+        self.needs_raster_and_draw = False
 
     def new_tab(self, url: URL, html_tree: bool, layout_tree: bool):
         canvas = self.root_surface.getCanvas()
-        new_tab = Tab(HEIGHT - self.chrome.bottom, html_tree, layout_tree)
+        new_tab = Tab(self, HEIGHT - self.chrome.bottom, html_tree, layout_tree)
         new_tab.load(url)
         self.active_tab = new_tab
         self.tabs.append(new_tab)
+        new_tab.render()
         self.raster_and_draw()
         for cmd in self.chrome.paint():
             cmd.execute(canvas)
