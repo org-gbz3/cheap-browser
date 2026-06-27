@@ -88,6 +88,16 @@ def do_login(session: dict[str, str], params: dict[str, str]):
         return "401 Unauthorized", out
 
 
+def show_count():
+    out = "<!doctype html>"
+    out += "<div>"
+    out += " Let's count up to 99!"
+    out += "</div>"
+    out += "<div>Output</div>"
+    out += "<script src=/eventloop.js></script>"
+    return out
+
+
 def do_request(
     session: dict[str, str], method: str, url: str, headers: dict[str, str], body: str | None
 ):
@@ -101,6 +111,12 @@ def do_request(
             return "200 OK", f.read()
     elif method == "GET" and url == "/login":
         return "200 OK", login_form(session)
+
+    elif method == "GET" and url == "/count":
+        return "200 OK", show_count()
+    elif method == "GET" and url == "/eventloop.js":
+        with open("eventloop.js") as f:
+            return "200 OK", f.read()
 
     elif method == "POST" and url == "/add":
         params = form_decode(body)
@@ -116,6 +132,7 @@ def do_request(
 def handle_connection(conx: socket.socket):
     req = conx.makefile("b", 0)
     reqline = req.readline().decode("utf8")
+    print(f"reqline=[{reqline}]")
     method, url, _ = reqline.split(" ", 2)
     assert method in ["GET", "POST"]
     headers: dict[str, str] = {}
