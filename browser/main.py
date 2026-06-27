@@ -1399,6 +1399,7 @@ class Tab:
         self.needs_render = False
         self.browser = browser
         self.display_list: list[DrawItem] = []
+        self.scroll_changed_in_tab = False
 
     def raster(self, canvas: skia.Canvas):
         for cmd in self.display_list:
@@ -1411,6 +1412,7 @@ class Tab:
         self.history.append(url)
         headers, body = url.request(self.url, payload)
         self.url = url
+        self.scroll_changed_in_tab = True
 
         logging.info(f"loading [{url}]")
         self.nodes = HTMLParser(body).parse()
@@ -1479,6 +1481,11 @@ class Tab:
             self.document.layout()
             if self.layout_tree:
                 print_layout_tree(self.document)
+
+            clamped_scroll = self.clamp_scroll(self.scroll)
+            if clamped_scroll != self.scroll:
+                self.scroll_changed_in_tab = True
+            self.scroll = clamped_scroll
 
             self.display_list = []
             paint_tree(self.document, self.display_list)
@@ -1588,16 +1595,27 @@ class Tab:
         self.needs_render = True
         self.browser.set_needs_animation_frame(self)
 
-    def run_animation_frame(self):
+    def clamp_scroll(self, scroll: int):
+        height = math.ceil(self.document.height + 2 * VSTEP)
+        maxscroll = height - self.tab_height
+        return max(0, min(scroll, maxscroll))
+
+    def run_animation_frame(self, scroll: int):
+        if not self.scroll_changed_in_tab:
+            self.scroll = scroll
         assert self.js
         with self.browser.measure.time("js-runRAFHandlers"):
             self.js.interp.evaljs("__runRAFHandlers()")
         self.render()
         document_height = math.ceil(self.document.height + 2 * VSTEP)
+        lscroll = None
+        if self.scroll_changed_in_tab:
+            lscroll = self.scroll
         assert self.url
-        commit_data = CommitData(self.url, self.scroll, document_height, self.display_list)
+        commit_data = CommitData(self.url, lscroll, document_height, self.display_list)
         self.display_list = []
         self.browser.commit(self, commit_data)
+        self.scroll_changed_in_tab = False
 
 
 class Chrome:
@@ -1750,7 +1768,7 @@ class Chrome:
 
 
 class CommitData:
-    def __init__(self, url: URL, scroll: int, height: int, display_list: list[DrawItem]):
+    def __init__(self, url: URL, scroll: int | None, height: int, display_list: list[DrawItem]):
         self.url = url
         self.scroll = scroll
         self.height = height
@@ -1802,10 +1820,18 @@ class Browser:
         self.needs_animation_frame = True
         threading.current_thread().name = "Browser thread"
 
+    def clamp_scroll(self, scroll: int):
+        height = self.active_tab_height
+        maxscroll = height - (HEIGHT - self.chrome.bottom)
+        return max(0, min(scroll, maxscroll))
+
     def handle_down(self):
         with self.lock:
-            self.active_tab.scrolldown()
-            self.draw()
+            if not self.active_tab_height:
+                return
+            self.active_tab_scroll = self.clamp_scroll(self.active_tab_scroll + SCROLL_STEP)
+            self.set_needs_raster_and_draw()
+            self.needs_animation_frame = True
 
     def handle_up(self):
         with self.lock:
@@ -1936,15 +1962,20 @@ class Browser:
 
     def set_active_tab(self, new_tab: Tab):
         self.active_tab = new_tab
+        self.active_tab_scroll = 0
+        self.active_tab_url = None
+        self.needs_animation_frame = True
 
     def schedule_animation_frame(self):
         def callback():
             with self.lock:
+                scroll = self.active_tab_scroll
                 self.needs_animation_frame = False
                 self.animation_timer = None
-                active_tab = self.active_tab
-            task = Task(self.active_tab.run_animation_frame, ())
-            active_tab.task_runner.schedule_task(task)
+            task = Task(self.active_tab.run_animation_frame, (scroll,))
+            self.active_tab.task_runner.schedule_task(task)
+            # task = Task(self.active_tab.run_animation_frame, ())
+            # active_tab.task_runner.schedule_task(task)
 
         with self.lock:
             if self.needs_animation_frame and not self.animation_timer:
@@ -1960,7 +1991,8 @@ class Browser:
         with self.lock:
             if tab == self.active_tab:
                 self.active_tab_url = data.url
-                self.active_tab_scroll = data.scroll
+                if data.scroll is not None:
+                    self.active_tab_scroll = data.scroll
                 self.active_tab_height = data.height
                 if data.display_list:
                     self.active_tab_display_list = data.display_list
