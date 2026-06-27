@@ -557,6 +557,9 @@ def parse_blend_mode(blend_mode_str: str | None):
         return skia.BlendMode.kSrcOver
 
 
+REFRESH_RATE_SEC = 0.033
+
+
 class Task:
     def __init__(self, task_code: Callable[..., None], args: tuple[object, ...]):
         self.task_code = task_code
@@ -1756,17 +1759,28 @@ class Browser:
         sdl2.SDL_BlitSurface(sdl_surface, rect, window_surface, rect)
         sdl2.SDL_UpdateWindowSurface(self.sdl_window)
 
+    def raster_and_draw(self):
+        self.raster_chrome()
+        self.raster_tab()
+        self.draw()
+
     def new_tab(self, url: URL, html_tree: bool, layout_tree: bool):
         canvas = self.root_surface.getCanvas()
         new_tab = Tab(HEIGHT - self.chrome.bottom, html_tree, layout_tree)
         new_tab.load(url)
         self.active_tab = new_tab
         self.tabs.append(new_tab)
-        self.raster_chrome()
-        self.raster_tab()
-        self.draw()
+        self.raster_and_draw()
         for cmd in self.chrome.paint():
             cmd.execute(canvas)
+
+    def schedule_animation_frame(self):
+        def callback():
+            active_tab = self.active_tab
+            task = Task(active_tab.render, ())
+            active_tab.task_runner.schedule_task(task)
+
+        threading.Timer(REFRESH_RATE_SEC, callback).start()
 
 
 def mainloop(browser: Browser):
@@ -1789,6 +1803,8 @@ def mainloop(browser: Browser):
             elif event.type == sdl2.SDL_TEXTINPUT:
                 browser.handle_key(event.text.text.decode("utf8"))
         browser.active_tab.task_runner.run()
+        browser.raster_and_draw()
+        browser.schedule_animation_frame()
 
 
 def parse_args():
