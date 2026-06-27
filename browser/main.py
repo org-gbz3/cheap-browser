@@ -8,6 +8,7 @@ import socket
 import ssl
 import sys
 import threading
+import time
 import urllib.parse
 from collections.abc import Callable
 from datetime import datetime
@@ -558,6 +559,48 @@ def parse_blend_mode(blend_mode_str: str | None):
 
 
 REFRESH_RATE_SEC = 0.033
+
+
+class MeasureTime:
+    def __init__(self):
+        self.file = open("browser.trace", "w")
+        self.file.write('{"traceEvents": [')
+        ts = time.time() * 1000000
+        self.file.write(
+            f'{{ "name": "process_name", "ph": "M", "ts": {str(ts)}, "pid": 1, '
+            + '"cat": "__metadata", "args": {"name": "Cheap-Browser"}}'
+        )
+        self.file.flush()
+
+    def time(self, name: str):
+        ts = time.time() * 1000000
+        self.file.write(
+            f', {{ "ph": "B", "cat": "_", "name": "{name}", "ts": {str(ts)}, "pid": 1, "tid": 1}}'
+        )
+        self.file.flush()
+        return MeasureTime.Span(self, name)
+
+    def stop(self, name: str):
+        ts = time.time() * 1000000
+        self.file.write(
+            f', {{ "ph": "E", "cat": "_", "name": "{name}", "ts": {str(ts)}, "pid": 1, "tid": 1}}'
+        )
+        self.file.flush()
+
+    def finish(self):
+        self.file.write("]}")
+        self.file.close()
+
+    class Span:
+        def __init__(self, measure: MeasureTime, name: str):
+            self.measure = measure
+            self.name = name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            self.measure.stop(self.name)
 
 
 class Task:
@@ -1198,7 +1241,8 @@ class JSContext:
     def __init__(self, tab: Tab):
         self.tab = tab
         self.interp = dukpy.JSInterpreter()
-        self.interp.evaljs(RUNTIME_JS)
+        with self.tab.browser.measure.time("js-runtime"):
+            self.interp.evaljs(RUNTIME_JS)
         self.interp.export_function("log", print)
         self.interp.export_function("querySelectorAll", self.querySelectorAll)
         self.interp.export_function("getAttribute", self.getAttribute)
@@ -1212,7 +1256,8 @@ class JSContext:
 
     def run(self, script: str, code: str):
         try:
-            self.interp.evaljs(code)
+            with self.tab.browser.measure.time("js-load"):
+                self.interp.evaljs(code)
         except dukpy.JSRuntimeError as e:
             print(f"Script {script} crashed.", e)
 
@@ -1274,12 +1319,14 @@ class JSContext:
     def dispatch_xhr_onload(self, out: str, handle: int):
         if self.discarded:
             return
-        self.interp.evaljs(XHR_ONLOAD_JS, out=out, handle=handle)
+        with self.tab.browser.measure.time("js-xhr"):
+            self.interp.evaljs(XHR_ONLOAD_JS, out=out, handle=handle)
 
     def dispatch_settimeout(self, handle: int):
         if self.discarded:
             return
-        self.interp.evaljs(SETTIMEOUT_JS, handle=handle)
+        with self.tab.browser.measure.time("js-settimeout"):
+            self.interp.evaljs(SETTIMEOUT_JS, handle=handle)
 
     def setTimeout(self, handle: int, time: int):
         def run_callback():
@@ -1386,17 +1433,19 @@ class Tab:
         self.js.interp.evaljs("__runRAFHandlers()")
         if not self.needs_render:
             return
-        style(self.nodes, sorted(self.rules, key=cascade_priority))
 
-        self.document = DocumentLayout(self.nodes)
-        self.document.layout()
-        if self.layout_tree:
-            print_layout_tree(self.document)
+        with self.browser.measure.time("render"):
+            style(self.nodes, sorted(self.rules, key=cascade_priority))
 
-        self.display_list: list[DrawItem] = []
-        paint_tree(self.document, self.display_list)
-        self.needs_render = False
-        self.browser.set_needs_raster_and_draw()
+            self.document = DocumentLayout(self.nodes)
+            self.document.layout()
+            if self.layout_tree:
+                print_layout_tree(self.document)
+
+            self.display_list: list[DrawItem] = []
+            paint_tree(self.document, self.display_list)
+            self.needs_render = False
+            self.browser.set_needs_raster_and_draw()
 
     def scrolldown(self):
         max_y = max(self.document.height + 2 * VSTEP - self.tab_height, 0)
@@ -1652,6 +1701,7 @@ class Chrome:
 
 class Browser:
     def __init__(self, html_tree: bool, layout_tree: bool, skip_ssl_verify: bool):
+        self.measure = MeasureTime()
         self.animation_timer = None
         self.tabs: list[Tab] = []
         self.active_tab: Tab
@@ -1727,6 +1777,7 @@ class Browser:
             self.set_needs_raster_and_draw()
 
     def handle_quit(self):
+        self.measure.finish()
         sdl2.SDL_DestroyWindow(self.sdl_window)
 
     def raster_tab(self):
@@ -1791,9 +1842,10 @@ class Browser:
     def raster_and_draw(self):
         if not self.needs_raster_and_draw:
             return
-        self.raster_chrome()
-        self.raster_tab()
-        self.draw()
+        with self.measure.time("raster/draw"):
+            self.raster_chrome()
+            self.raster_tab()
+            self.draw()
         self.needs_raster_and_draw = False
 
     def new_tab(self, url: URL, html_tree: bool, layout_tree: bool):
