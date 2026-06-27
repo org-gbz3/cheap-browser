@@ -563,6 +563,7 @@ REFRESH_RATE_SEC = 0.033
 
 class MeasureTime:
     def __init__(self):
+        self.lock = threading.Lock()
         self.file = open("browser.trace", "w")
         self.file.write('{"traceEvents": [')
         ts = time.time() * 1000000
@@ -573,23 +574,36 @@ class MeasureTime:
         self.file.flush()
 
     def time(self, name: str):
-        ts = time.time() * 1000000
-        self.file.write(
-            f', {{ "ph": "B", "cat": "_", "name": "{name}", "ts": {str(ts)}, "pid": 1, "tid": 1}}'
-        )
-        self.file.flush()
-        return MeasureTime.Span(self, name)
+        with self.lock:
+            ts = time.time() * 1000000
+            tid = threading.get_ident()
+            self.file.write(
+                f', {{ "ph": "B", "cat": "_", "name": "{name}", "ts": {str(ts)}, "pid": 1,'
+                + f' "tid": {str(tid)}}}'
+            )
+            self.file.flush()
+            return MeasureTime.Span(self, name)
 
     def stop(self, name: str):
-        ts = time.time() * 1000000
-        self.file.write(
-            f', {{ "ph": "E", "cat": "_", "name": "{name}", "ts": {str(ts)}, "pid": 1, "tid": 1}}'
-        )
-        self.file.flush()
+        with self.lock:
+            ts = time.time() * 1000000
+            tid = threading.get_ident()
+            self.file.write(
+                f', {{ "ph": "E", "cat": "_", "name": "{name}", "ts": {str(ts)}, "pid": 1,'
+                + f' "tid": {str(tid)}}}'
+            )
+            self.file.flush()
 
     def finish(self):
-        self.file.write("]}")
-        self.file.close()
+        with self.lock:
+            for thread in threading.enumerate():
+                self.file.write(
+                    ', { "ph": "M", "name": "thread_name", "pid": 1,'
+                    + f' "tid": {str(thread.ident)},'
+                    + f' "args": {{ "name": "{thread.name}"}}}}'
+                )
+            self.file.write("]}")
+            self.file.close()
 
     class Span:
         def __init__(self, measure: MeasureTime, name: str):
