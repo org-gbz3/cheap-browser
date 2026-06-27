@@ -1384,6 +1384,7 @@ class Tab:
         self.js: JSContext | None = None
         self.needs_render = False
         self.browser = browser
+        self.display_list: list[DrawItem] = []
 
     def raster(self, canvas: skia.Canvas):
         for cmd in self.display_list:
@@ -1454,8 +1455,6 @@ class Tab:
         self.set_needs_render()
 
     def render(self):
-        assert self.js
-        self.js.interp.evaljs("__runRAFHandlers()")
         if not self.needs_render:
             return
 
@@ -1467,10 +1466,9 @@ class Tab:
             if self.layout_tree:
                 print_layout_tree(self.document)
 
-            self.display_list: list[DrawItem] = []
+            self.display_list = []
             paint_tree(self.document, self.display_list)
             self.needs_render = False
-            self.browser.set_needs_raster_and_draw()
 
     def scrolldown(self):
         max_y = max(self.document.height + 2 * VSTEP - self.tab_height, 0)
@@ -1575,6 +1573,17 @@ class Tab:
     def set_needs_render(self):
         self.needs_render = True
         self.browser.set_needs_animation_frame(self)
+
+    def run_animation_frame(self):
+        assert self.js
+        with self.browser.measure.time("js-runRAFHandlers"):
+            self.js.interp.evaljs("__runRAFHandlers()")
+        self.render()
+        document_height = math.ceil(self.document.height + 2 * VSTEP)
+        assert self.url
+        commit_data = CommitData(self.url, self.scroll, document_height, self.display_list)
+        self.display_list = []
+        self.browser.commit(self, commit_data)
 
 
 class Chrome:
@@ -1726,6 +1735,14 @@ class Chrome:
         self.focus = None
 
 
+class CommitData:
+    def __init__(self, url: URL, scroll: int, height: int, display_list: list[DrawItem]):
+        self.url = url
+        self.scroll = scroll
+        self.height = height
+        self.display_list = display_list
+
+
 class Browser:
     def __init__(self, html_tree: bool, layout_tree: bool, skip_ssl_verify: bool):
         self.measure = MeasureTime()
@@ -1733,6 +1750,10 @@ class Browser:
         self.tabs: list[Tab] = []
         self.lock = threading.Lock()
         self.active_tab: Tab
+        self.active_tab_url = None
+        self.active_tab_scroll = 0
+        self.active_tab_height = 0
+        self.active_tab_display_list = None
         self.sdl_window = sdl2.SDL_CreateWindow(
             b"Browser",
             sdl2.SDL_WINDOWPOS_CENTERED,
@@ -1768,40 +1789,45 @@ class Browser:
         threading.current_thread().name = "Browser thread"
 
     def handle_down(self):
-        self.active_tab.scrolldown()
-        self.draw()
+        with self.lock:
+            self.active_tab.scrolldown()
+            self.draw()
 
     def handle_up(self):
-        self.active_tab.scrollup()
-        self.draw()
+        with self.lock:
+            self.active_tab.scrollup()
+            self.draw()
 
     def handle_click(self, e: sdl2.SDL_MouseButtonEvent):
-        if e.y < self.chrome.bottom:
-            self.focus = None
-            self.chrome.click(e.x, e.y)
-            self.set_needs_raster_and_draw()
-        else:
-            self.focus = "content"
-            self.chrome.blur()
-            tab_y = e.y - self.chrome.bottom
-            task = Task(self.active_tab.click, (e.x, tab_y))
-            self.active_tab.task_runner.schedule_task(task)
-        self.draw()
+        with self.lock:
+            if e.y < self.chrome.bottom:
+                self.focus = None
+                self.chrome.click(e.x, e.y)
+                self.set_needs_raster_and_draw()
+            else:
+                self.focus = "content"
+                self.chrome.blur()
+                tab_y = e.y - self.chrome.bottom
+                task = Task(self.active_tab.click, (e.x, tab_y))
+                self.active_tab.task_runner.schedule_task(task)
+            self.draw()
 
     def handle_key(self, e: sdl2.SDL_KeyboardEvent):
-        if len(e.char) == 0:
-            return
-        if not (0x20 <= ord(e.char) < 0x7F):
-            return
-        if self.chrome.keypress(e.char):
-            self.set_needs_raster_and_draw()
-        elif self.focus == "content":
-            task = Task(self.active_tab.keypress, (e.char,))
-            self.active_tab.task_runner.schedule_task(task)
+        with self.lock:
+            if len(e.char) == 0:
+                return
+            if not (0x20 <= ord(e.char) < 0x7F):
+                return
+            if self.chrome.keypress(e.char):
+                self.set_needs_raster_and_draw()
+            elif self.focus == "content":
+                task = Task(self.active_tab.keypress, (e.char,))
+                self.active_tab.task_runner.schedule_task(task)
 
     def handle_enter(self):
-        if self.chrome.enter():
-            self.set_needs_raster_and_draw()
+        with self.lock:
+            if self.chrome.enter():
+                self.set_needs_raster_and_draw()
 
     def handle_quit(self):
         self.measure.finish()
@@ -1810,13 +1836,15 @@ class Browser:
         sdl2.SDL_DestroyWindow(self.sdl_window)
 
     def raster_tab(self):
-        tab_height = math.ceil(self.active_tab.document.height + 2 * VSTEP)
+        tab_height = math.ceil(self.active_tab_height + 2 * VSTEP)
         if not self.tab_surface or tab_height != self.tab_surface.height():
             self.tab_surface = skia.Surface(WIDTH, tab_height)
 
         canvas = self.tab_surface.getCanvas()
         canvas.clear(skia.ColorWHITE)
-        self.active_tab.raster(canvas)
+        if self.active_tab_display_list:
+            for cmd in self.active_tab_display_list:
+                cmd.execute(canvas)
 
     def raster_chrome(self):
         canvas = self.chrome_surface.getCanvas()
@@ -1897,19 +1925,33 @@ class Browser:
 
     def schedule_animation_frame(self):
         def callback():
-            self.needs_animation_frame = False
-            self.animation_timer = None
-            active_tab = self.active_tab
-            task = Task(active_tab.render, ())
+            with self.lock:
+                self.needs_animation_frame = False
+                self.animation_timer = None
+                active_tab = self.active_tab
+            task = Task(self.active_tab.run_animation_frame, ())
             active_tab.task_runner.schedule_task(task)
 
-        if self.needs_animation_frame and not self.animation_timer:
-            self.animation_timer = threading.Timer(REFRESH_RATE_SEC, callback)
-            self.animation_timer.start()
+        with self.lock:
+            if self.needs_animation_frame and not self.animation_timer:
+                self.animation_timer = threading.Timer(REFRESH_RATE_SEC, callback)
+                self.animation_timer.start()
 
     def set_needs_animation_frame(self, tab: Tab):
-        if tab == self.active_tab:
-            self.needs_animation_frame = True
+        with self.lock:
+            if tab == self.active_tab:
+                self.needs_animation_frame = True
+
+    def commit(self, tab: Tab, data: CommitData):
+        with self.lock:
+            if tab == self.active_tab:
+                self.active_tab_url = data.url
+                self.active_tab_scroll = data.scroll
+                self.active_tab_height = data.height
+                if data.display_list:
+                    self.active_tab_display_list = data.display_list
+                self.animation_timer = None
+                self.set_needs_raster_and_draw()
 
 
 def mainloop(browser: Browser):
